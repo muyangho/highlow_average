@@ -1,7 +1,5 @@
 streamlit
-yfinance
 pandas
+numpy
 finance-datareader
-lxml
-html5lib
-beautifulsoup4
+yfinance
