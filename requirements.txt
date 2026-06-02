@@ -1,5 +1,5 @@
 streamlit
 pandas
 numpy
-finance-datareader
+finance-datareader>=0.9.90
 yfinance
