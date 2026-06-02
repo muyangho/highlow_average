@@ -18,7 +18,6 @@ def load_stock_listings():
         krx = fdr.StockListing('KRX-DESC') 
     except Exception:
         try:
-            # [자동화 1] FDR 차단 시: 한국거래소(KIND) 공식 엑셀 데이터 직접 크롤링
             url = "http://kind.krx.co.kr/corpgeneral/corpList.do?method=download"
             krx = pd.read_html(url, header=0)[0]
             krx = krx[['회사명', '종목코드']]
@@ -46,7 +45,6 @@ krx_dict, krx_code_dict, us_dict, us_code_dict = load_stock_listings()
 
 # --- 동적 API 검색 ---
 def search_naver_ticker(name):
-    """로컬 딕셔너리에 종목이 없을 경우 네이버 금융 API를 통해 실시간으로 코드를 찾아옵니다."""
     try:
         url = f"https://ac.finance.naver.com/ac?q={name}&q_enc=utf-8&st=111&se=1&tx=0"
         res = requests.get(url, timeout=3)
@@ -133,6 +131,11 @@ def get_market_index(market, start_date, end_date):
     else:
         df = yf.download('^GSPC', start=start_date, end=end_date, progress=False)
         name = "S&P 500 지수"
+        
+    # Timezone 제거 (슬라이싱 오류 방지)
+    if df is not None and not df.empty and df.index.tz is not None:
+        df.index = df.index.tz_localize(None)
+        
     return name, df
 
 # --- UI 레이아웃 ---
@@ -167,15 +170,18 @@ if run_btn:
     parsed_stocks = parse_tickers(stock_input, market_choice)
     market_name, market_df = get_market_index(market_choice, start_date, end_date)
     
+    # datetime 비교를 위한 형변환
+    sub_start_dt = pd.to_datetime(sub_start)
+    sub_end_dt = pd.to_datetime(sub_end)
+    
     st.subheader("🌐 시장 환경 분석")
     if market_df is not None and not market_df.empty:
         m_avg_up, m_avg_down, m_curr_ret, m_curr_sign = calculate_streak_averages(market_df)
         
-        # 시장 지수의 서브 레인지(부분 구간) 수익률 계산
-        m_sub_df = market_df.loc[sub_start:sub_end]
+        # 날짜 인덱스를 통한 완벽한 서브레인지 필터링
+        m_sub_df = market_df[(market_df.index >= sub_start_dt) & (market_df.index <= sub_end_dt)]
         m_sub_ret = (m_sub_df['Close'].iloc[-1] / m_sub_df['Close'].iloc[0] - 1) if len(m_sub_df) > 1 else 0
         
-        # UI 레이아웃 5칸으로 확장
         col_m1, col_m2, col_m3, col_m4, col_m5 = st.columns(5)
         col_m1.metric(f"{market_name} 평균 연속 상승률", f"{m_avg_up*100:.2f}%")
         col_m2.metric("평균 연속 하락률 (조정치)", f"{m_avg_down*100:.2f}%")
@@ -183,8 +189,8 @@ if run_btn:
         sign_text = "상승중" if m_curr_sign == 1 else ("하락중" if m_curr_sign == -1 else "보합")
         col_m3.metric(f"현재 추세 누적률 ({sign_text})", f"{m_curr_ret*100:.2f}%")
         
-        # 새롭게 추가된 부분 구간 수익률 UI
-        col_m4.metric(f"부분 구간 수익률", f"{m_sub_ret*100:.2f}%")
+        # 정확히 계산된 서브레인지 수익률 표출
+        col_m4.metric("부분 구간 수익률", f"{m_sub_ret*100:.2f}%")
         
         warning_level = "안전/초입"
         if m_curr_sign == 1 and m_curr_ret >= m_avg_up * 0.8:
@@ -215,6 +221,10 @@ if run_btn:
             
             if df.empty:
                 continue
+                
+            # Timezone 제거 (슬라이싱 오류 방지)
+            if df.index.tz is not None:
+                df.index = df.index.tz_localize(None)
             
             if t_name in ["국내종목", "미국종목"] and market_choice == '한국 (KRX)' and t_code in krx_code_dict:
                 t_name = krx_code_dict[t_code]
@@ -222,7 +232,9 @@ if run_btn:
             display_name = f"{t_name} ({t_code})"
                 
             s_avg_up, s_avg_down, s_curr_ret, s_curr_sign = calculate_streak_averages(df)
-            sub_df = df.loc[sub_start:sub_end]
+            
+            # 개별 종목 역시 동일한 날짜 인덱스 필터링 적용
+            sub_df = df[(df.index >= sub_start_dt) & (df.index <= sub_end_dt)]
             sub_ret = (sub_df['Close'].iloc[-1] / sub_df['Close'].iloc[0] - 1) if len(sub_df) > 1 else 0
             
             df['Vol_20MA'] = df['Volume'].rolling(window=20).mean()
