@@ -10,14 +10,14 @@ import warnings
 warnings.filterwarnings('ignore')
 
 # --- 페이지 설정 ---
-st.set_page_config(page_title="주도주 포착 및 차익실현 백테스터 (Quant Ver.)", layout="wide")
+st.set_page_config(page_title="주도주 단기/스윙 타점 분석기 (Trend Ver.)", layout="wide")
 
 with st.sidebar:
     if st.button("🔄 종목 데이터 리셋 (오류시 클릭)", help="네트워크 오류나 캐시 꼬임 발생 시 눌러주세요."):
         st.cache_data.clear()
         st.success("캐시가 초기화되었습니다. 다시 분석을 실행해 주세요!")
 
-# --- 데이터 캐싱 및 로드 (안티-봇 헤더) ---
+# --- 데이터 캐싱 및 로드 ---
 @st.cache_data(ttl=86400, show_spinner="증권사 서버에서 최신 종목 목록을 가져오는 중입니다...")
 def load_stock_listings():
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
@@ -129,22 +129,22 @@ def get_vix_full(start_date, end_date):
         vix_df.index = vix_df.index.tz_localize(None)
     return vix_df
 
-# --- 자체 공포탐욕지수 계산 함수 ---
-def calculate_fear_greed_score(vix, market_rsi, market_disparity):
-    # 1. VIX 점수화 (10~40 범위를 100~0으로 역산. 낮을수록 탐욕, 높을수록 공포)
+# --- 단기 스윙 맞춤형 공포탐욕지수 ---
+def calculate_fear_greed_score(vix, market_rsi, market_20ma_disparity):
+    # 1. VIX (10~40 범위를 100~0 역산)
     v_score = max(0, min(100, (40 - vix) / 30 * 100))
-    # 2. RSI 점수화 (그대로 0~100)
+    # 2. RSI (0~100)
     r_score = max(0, min(100, market_rsi))
-    # 3. 이격률 점수화 (-15%~+15% 범위를 0~100으로 맵핑)
-    d_score = max(0, min(100, (market_disparity + 0.15) / 0.30 * 100))
+    # 3. 20일 단기 이격률 (-5% ~ +5% 구간을 0~100으로 매핑, 단기 변동성에 즉각 반응)
+    d_score = max(0, min(100, (market_20ma_disparity + 0.05) / 0.10 * 100))
     
-    # 세 지표 평균으로 0~100점 산출
+    # 세 지표 평균 산출
     final_score = (v_score + r_score + d_score) / 3
     return final_score
 
 # --- UI 레이아웃 ---
-st.title("⏱️ 퀀트 타임머신 & 차익실현 백테스터")
-st.caption("과거 특정 날짜를 '종료일'로 지정하면, 당시의 시장 과열도(VIX, RSI, 이격률)가 어땠는지 완벽히 복기할 수 있습니다.")
+st.title("⏱️ 추세/스윙 타점 및 차익실현 백테스터")
+st.caption("대세 상승장에서도 단기 과열(20일선 및 볼린저밴드 기준)을 정확히 짚어내어 잔파도를 타는 데 최적화되었습니다.")
 
 with st.sidebar:
     st.header("설정 (Settings)")
@@ -156,13 +156,12 @@ with st.sidebar:
     st.subheader("기간 설정")
     col1, col2 = st.columns(2)
     with col1:
-        start_date = st.date_input("전체 데이터 시작일", datetime.today() - timedelta(days=730))
+        start_date = st.date_input("전체 데이터 시작일", datetime.today() - timedelta(days=365))
     with col2:
         end_date = st.date_input("전체 데이터 종료일", datetime.today())
         
     st.divider()
     st.subheader("⏱️ 과거 복기 (타임머신 설정)")
-    st.caption("지정한 '기준일(종료일)' 시점의 퀀트 지표를 추출합니다.")
     sub_start = st.date_input("구간 수익률 시작일", datetime.today() - timedelta(days=30))
     sub_end = st.date_input("📌 분석 기준일 (종료일)", datetime.today())
     
@@ -181,7 +180,7 @@ if run_btn:
     sub_start_dt = pd.to_datetime(sub_start)
     sub_end_dt = pd.to_datetime(sub_end)
     
-    st.subheader(f"🌐 매크로 시장 환경 진단 (기준일: {sub_end_dt.strftime('%Y-%m-%d')})")
+    st.subheader(f"🌐 현재 상승 파동 모멘텀 진단 (기준일: {sub_end_dt.strftime('%Y-%m-%d')})")
     
     if market_df_full is not None and not market_df_full.empty:
         m_df_as_of = market_df_full[market_df_full.index <= sub_end_dt].copy()
@@ -190,9 +189,9 @@ if run_btn:
         if not m_df_as_of.empty:
             m_avg_up, m_avg_down, m_curr_ret, m_curr_sign = calculate_streak_averages(m_df_as_of)
             
-            # 시장 이격률 및 RSI 계산
-            m_df_as_of['200MA'] = m_df_as_of['Close'].rolling(window=200).mean()
-            m_disparity = float(m_df_as_of['Close'].iloc[-1] / m_df_as_of['200MA'].iloc[-1] - 1) if not pd.isna(m_df_as_of['200MA'].iloc[-1]) else 0.0
+            # [변경됨] 시장 단기 20일 이격률 및 RSI 계산
+            m_df_as_of['20MA'] = m_df_as_of['Close'].rolling(window=20).mean()
+            m_disp_20 = float(m_df_as_of['Close'].iloc[-1] / m_df_as_of['20MA'].iloc[-1] - 1) if not pd.isna(m_df_as_of['20MA'].iloc[-1]) else 0.0
             
             m_delta = m_df_as_of['Close'].diff()
             m_gain = (m_delta.where(m_delta > 0, 0)).rolling(window=14).mean()
@@ -201,35 +200,26 @@ if run_btn:
             m_rsi = 100 - (100 / (1 + m_rs))
             current_m_rsi = float(m_rsi.iloc[-1]) if len(m_df_as_of) >= 15 else 50.0
             
-            # 지정 구간 수익률
             m_sub_df = m_df_as_of[m_df_as_of.index >= sub_start_dt]
             m_sub_ret = float(m_sub_df['Close'].iloc[-1] / m_sub_df['Close'].iloc[0] - 1) if len(m_sub_df) > 1 else 0.0
             current_vix = float(vix_as_of['Close'].iloc[-1]) if vix_as_of is not None and not vix_as_of.empty else 20.0
             
-            # 🔴 자체 공포탐욕지수 스코어링 적용 (0 ~ 100)
-            fg_score = calculate_fear_greed_score(current_vix, current_m_rsi, m_disparity)
+            # 자체 공포탐욕지수 계산
+            fg_score = calculate_fear_greed_score(current_vix, current_m_rsi, m_disp_20)
             
-            fg_status = "중립 (관망)"
-            fg_color = "gray"
-            if fg_score <= 25:
-                fg_status = "😨 극단적 공포 (매수 기회)"
-                fg_color = "blue"
-            elif fg_score <= 45:
-                fg_status = "📉 공포 (분할 매수)"
-            elif fg_score >= 75:
-                fg_status = "🤑 극단적 탐욕 (강력 매도)"
-                fg_color = "red"
-            elif fg_score >= 55:
-                fg_status = "📈 탐욕 (차익 실현)"
+            fg_status = "중립 (추세 지속 가능)"
+            if fg_score <= 25: fg_status = "😨 극단적 공포 (단기 낙폭 과대 / 줍줍)"
+            elif fg_score <= 45: fg_status = "📉 공포 (반등 모색 구간)"
+            elif fg_score >= 80: fg_status = "🚨 단기 과열 극심 (조정 임박)"
+            elif fg_score >= 60: fg_status = "📈 탐욕 (추가 상승 여력 있으나 주의)"
             
-            # 대시보드 UI 출력
             col_m1, col_m2, col_m3, col_m4 = st.columns(4)
-            col_m1.metric(f"종합 공포탐욕지수", f"{fg_score:.1f}점", fg_status)
-            col_m2.metric("글로벌 공포지수 (VIX)", f"{current_vix:.2f}", "외국인 수급 방아쇠" if market_choice == '한국 (KRX)' else "미장 변동성")
-            col_m3.metric(f"{market_name} 200일 이격률", f"{m_disparity*100:+.2f}%")
+            col_m1.metric(f"단기 스윙 공포탐욕지수", f"{fg_score:.1f}점", fg_status)
+            col_m2.metric("글로벌 공포지수 (VIX)", f"{current_vix:.2f}")
+            col_m3.metric(f"{market_name} 20일(단기) 이격률", f"{m_disp_20*100:+.2f}%")
             col_m4.metric(f"지정 구간 수익률", f"{m_sub_ret*100:+.2f}%")
             
-            st.progress(int(fg_score), text=f"🔥 탐욕(100) ↔ 🧊 공포(0) | 현재 지수: {fg_score:.1f}점 ({fg_status})")
+            st.progress(int(fg_score), text=f"🔥 단기 과열(100) ↔ 🧊 단기 침체(0) | 현재 스코어: {fg_score:.1f}점")
             
         else:
             st.warning("설정한 기준일 이전의 시장 데이터가 부족합니다.")
@@ -237,7 +227,7 @@ if run_btn:
         st.warning("시장 지수 데이터를 불러올 수 없습니다.")
 
     st.divider()
-    st.subheader(f"🎯 개별 종목 정밀 퀀트 분석 (기준일: {sub_end_dt.strftime('%Y-%m-%d')})")
+    st.subheader(f"🎯 개별 종목 추세 강도 및 차익실현 분석 (기준일: {sub_end_dt.strftime('%Y-%m-%d')})")
     
     results = []
     progress_bar = st.progress(0)
@@ -274,9 +264,21 @@ if run_btn:
             
             s_avg_up, s_avg_down, s_curr_ret, s_curr_sign = calculate_streak_averages(df_as_of)
             
-            df_as_of['200MA'] = df_as_of['Close'].rolling(window=200).mean()
-            disparity_200 = float(df_as_of['Close'].iloc[-1] / df_as_of['200MA'].iloc[-1] - 1) if len(df_as_of) >= 200 and not pd.isna(df_as_of['200MA'].iloc[-1]) else 0.0
+            # [변경됨] 1. 20일 단기 이격률 및 볼린저 밴드 (20, 2) 계산
+            df_as_of['20MA'] = df_as_of['Close'].rolling(window=20).mean()
+            df_as_of['20STD'] = df_as_of['Close'].rolling(window=20).std()
+            df_as_of['BB_Upper'] = df_as_of['20MA'] + (df_as_of['20STD'] * 2)
+            df_as_of['BB_Lower'] = df_as_of['20MA'] - (df_as_of['20STD'] * 2)
             
+            # 볼린저 밴드 위치 (1.0 이상이면 상단 돌파로 초과열, 0.0 이하면 하단 이탈로 초침체)
+            current_close = df_as_of['Close'].iloc[-1]
+            bb_upper = df_as_of['BB_Upper'].iloc[-1]
+            bb_lower = df_as_of['BB_Lower'].iloc[-1]
+            bb_position = float((current_close - bb_lower) / (bb_upper - bb_lower)) if not pd.isna(bb_upper) and bb_upper != bb_lower else 0.5
+            
+            disparity_20 = float(current_close / df_as_of['20MA'].iloc[-1] - 1) if not pd.isna(df_as_of['20MA'].iloc[-1]) else 0.0
+            
+            # 2. RSI (14일)
             delta = df_as_of['Close'].diff()
             gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
             loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
@@ -284,6 +286,7 @@ if run_btn:
             rsi = 100 - (100 / (1 + rs))
             current_rsi = float(rsi.iloc[-1]) if len(df_as_of) >= 15 else 50.0
             
+            # 3. 거래량 배수 및 상대수익률
             df_as_of['Vol_20MA'] = df_as_of['Volume'].rolling(window=20).mean()
             vol_ratio = float(df_as_of['Volume'].iloc[-1] / df_as_of['Vol_20MA'].iloc[-1]) if len(df_as_of) >= 20 and df_as_of['Vol_20MA'].iloc[-1] > 0 else 1.0
             
@@ -297,35 +300,43 @@ if run_btn:
                 market_20d_ret = 0.0
             relative_strength = stock_20d_ret - market_20d_ret
             
+            # 🔴 단기 스윙 최적화 채점 로직
             score = 0
+            # 단기 과열 시그널 (-)
             if current_rsi >= 70: score -= 1
-            if disparity_200 >= 0.10: score -= 1
-            if s_curr_sign == 1 and s_curr_ret >= s_avg_up * 0.9 and s_avg_up > 0: score -= 1
+            if bb_position >= 0.95: score -= 1 # 밴드 상단에 바짝 붙거나 뚫음
+            if s_curr_sign == 1 and s_curr_ret >= s_avg_up * 0.8 and s_avg_up > 0: score -= 1
             
+            # 단기 침체 시그널 (+)
             if current_rsi <= 30: score += 1
-            if disparity_200 <= -0.10: score += 1
-            if s_curr_sign == -1 and s_curr_ret <= s_avg_down * 0.9 and s_avg_down < 0: score += 1
+            if bb_position <= 0.05: score += 1 # 밴드 하단에 바짝 붙거나 이탈
+            if s_curr_sign == -1 and s_curr_ret <= s_avg_down * 0.8 and s_avg_down < 0: score += 1
             
-            action = "관망 (중립)"
-            if score <= -2: action = "🚨 강력 차익실현 (과열)"
-            elif score == -1: action = "⚠️ 분할 매도 고려"
-            elif score >= 2: action = "🟢 적극 매수 (바닥)"
-            elif score == 1: action = "💡 저점 매수 모니터링"
+            action = "🟢 추세 양호 (홀딩)"
+            if score <= -2: action = "🚨 밴드 이탈 과열 (차익실현)"
+            elif score == -1: action = "⚠️ 단기 저항대 (주의)"
+            elif score >= 2: action = "🔥 단기 낙폭 과대 (적극 매수)"
+            elif score == 1: action = "💡 지지선 테스트 (모니터링)"
+            elif s_curr_sign == -1: action = "📉 단기 하락 추세"
                 
-            is_leader = "🔥 주도주" if relative_strength > 0.05 and vol_ratio > 1.5 and disparity_200 > 0 else "-"
+            is_leader = "🚀 주도주" if relative_strength > 0.05 and vol_ratio > 1.5 and disparity_20 > 0 else "-"
             
+            # 밴드 위치 텍스트 변환
+            if bb_position >= 1.0: bb_text = "상단 돌파 (초과열)"
+            elif bb_position <= 0.0: bb_text = "하단 이탈 (초침체)"
+            else: bb_text = f"밴드 내 ({bb_position*100:.0f}%)"
+
             results.append({
                 "종목명(티커)": display_name,
-                "퀀트 진단결과": action,
+                "현재 추세 진단": action,
                 "주도주 여부": is_leader,
                 "RSI(14)": f"{current_rsi:.1f}",
-                "200일 이격률": f"{disparity_200*100:+.1f}%",
+                "단기 20일 이격률": f"{disparity_20*100:+.1f}%",
+                "볼린저밴드 위치": bb_text,
                 "평균 연속 상승률": f"{s_avg_up*100:+.2f}%", 
                 "평균 연속 하락률": f"{s_avg_down*100:+.2f}%", 
                 "현재 연속 수익률": f"{s_curr_ret*100:+.2f}%",
-                "지정 구간 수익률": f"{sub_ret*100:+.2f}%",
-                "거래량(20MA)": f"{vol_ratio:.1f}x",
-                "시장대비 상대수익": f"{relative_strength*100:+.1f}%"
+                "지정 구간 수익률": f"{sub_ret*100:+.2f}%"
             })
         except Exception as e:
             failed_stocks.append(f"{t_name}({t_code})")
