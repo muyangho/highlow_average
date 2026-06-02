@@ -3,38 +3,31 @@ import pandas as pd
 import numpy as np
 import FinanceDataReader as fdr
 import yfinance as yf
+import requests
 import re
 from datetime import datetime, timedelta
 
 # --- 페이지 설정 ---
 st.set_page_config(page_title="주도주 포착 및 차익실현 분석기", layout="wide")
 
-# --- 서버 차단 대비 주요 종목 백업 맵 (Fallback Data) ---
-# KRX 서버가 클라우드 IP를 차단하더라도 자주 쓰이는 주요 종목은 이름/코드 매핑이 가능하게 합니다.
-BACKUP_KRX_DICT = {
-    "삼성전자": "005930", "SK하이닉스": "000660", "LG에너지솔루션": "373220",
-    "삼성바이오로직스": "207940", "현대차": "005380", "기아": "000270",
-    "셀트리온": "068270", "KB금융": "105560", "네이버": "035420",
-    "NAVER": "035420", "신한지주": "055550", "카카오": "035720",
-    "현대모비스": "012330", "포스코홀딩스": "005490", "POSCO홀딩스": "005490"
-}
-BACKUP_KRX_CODE_DICT = {v: k for k, v in BACKUP_KRX_DICT.items()}
-
-# --- 데이터 캐싱 및 로드 ---
+# --- 데이터 캐싱 및 로드 (완전 자동화) ---
 @st.cache_data(ttl=86400)
 def load_stock_listings():
-    # 한국 주식 로드 시도
+    # 1. 한국 주식 로드
     try:
         krx = fdr.StockListing('KRX-DESC') 
     except Exception:
         try:
-            kospi = fdr.StockListing('KOSPI')
-            kosdaq = fdr.StockListing('KOSDAQ')
-            krx = pd.concat([kospi, kosdaq])
+            # [자동화 1] FDR 차단 시: 한국거래소(KIND) 공식 엑셀 데이터 직접 크롤링
+            url = "http://kind.krx.co.kr/corpgeneral/corpList.do?method=download"
+            krx = pd.read_html(url, header=0)[0]
+            krx = krx[['회사명', '종목코드']]
+            krx = krx.rename(columns={'회사명': 'Name', '종목코드': 'Code'})
+            krx['Code'] = krx['Code'].astype(str).str.zfill(6) # 6자리 숫자로 0 채우기
         except Exception:
             krx = pd.DataFrame(columns=['Name', 'Code'])
 
-    # 미국 주식 로드 시도
+    # 2. 미국 주식 로드
     try:
         nasdaq = fdr.StockListing('NASDAQ')
         nyse = fdr.StockListing('NYSE')
@@ -42,16 +35,8 @@ def load_stock_listings():
     except Exception:
         us_df = pd.DataFrame(columns=['Name', 'Symbol'])
     
-    # 기본 딕셔너리 생성
     krx_dict = dict(zip(krx['Name'], krx['Code'])) if not krx.empty else {}
     krx_code_dict = dict(zip(krx['Code'], krx['Name'])) if not krx.empty else {}
-    
-    # 백업 데이터 병합 (서버 차단 시에도 최소한의 작동 보장)
-    for k, v in BACKUP_KRX_DICT.items():
-        if k not in krx_dict: krx_dict[k] = v
-    for k, v in BACKUP_KRX_CODE_DICT.items():
-        if k not in krx_code_dict: krx_code_dict[k] = v
-        
     us_dict = dict(zip(us_df['Name'], us_df['Symbol'])) if not us_df.empty else {}
     us_code_dict = dict(zip(us_df['Symbol'], us_df['Name'])) if not us_df.empty else {}
     
@@ -59,9 +44,21 @@ def load_stock_listings():
 
 krx_dict, krx_code_dict, us_dict, us_code_dict = load_stock_listings()
 
-# --- 헬퍼 함수: 입력값 분석 및 이름/티커 동시 추출 ---
+# --- 동적 API 검색 (최후의 보루) ---
+def search_naver_ticker(name):
+    """로컬 딕셔너리에 종목이 없을 경우 네이버 금융 API를 통해 실시간으로 코드를 찾아옵니다."""
+    try:
+        url = f"https://ac.finance.naver.com/ac?q={name}&q_enc=utf-8&st=111&se=1&tx=0"
+        res = requests.get(url, timeout=3)
+        data = res.json()
+        if data.get('items') and len(data['items'][0]) > 0:
+            return data['items'][0][0][1] # 검색된 첫 번째 종목코드 반환
+    except Exception:
+        pass
+    return None
+
+# --- 헬퍼 함수 ---
 def parse_tickers(input_text, market):
-    # 띄어쓰기, 줄바꿈, 콤마, 탭 등을 기준으로 분리
     raw_list = re.split(r'[\n,\t\s]+', input_text.strip())
     raw_list = [x for x in raw_list if x]
     
@@ -71,24 +68,30 @@ def parse_tickers(input_text, market):
         name = item
         
         if market == '한국 (KRX)':
-            if item in krx_dict:           # 사용자가 '이름'을 입력한 경우
+            if item in krx_dict:
                 ticker = krx_dict[item]
                 name = item
-            elif item in krx_code_dict:    # 사용자가 '6자리 코드'를 입력한 경우
+            elif item in krx_code_dict:
                 name = krx_code_dict[item]
                 ticker = item
-            else:                          # 매핑 데이터에 없는 경우 (코드라 가정)
-                ticker = item
-                name = f"국내종목"
+            else:
+                # [자동화 2] 딕셔너리에 없으면 네이버 API 실시간 호출
+                live_code = search_naver_ticker(item)
+                if live_code and live_code.isdigit():
+                    ticker = live_code
+                    name = item
+                else:
+                    ticker = item
+                    name = "국내종목"
         else:
             item = item.upper()
-            if item in us_code_dict:       # 사용자가 '티커'를 입력한 경우
+            if item in us_code_dict:
                 name = us_code_dict[item]
                 ticker = item
-            elif item in us_dict:          # 사용자가 '풀네임'을 입력한 경우
+            elif item in us_dict:
                 ticker = us_dict[item]
                 name = item
-            else:                          # 매핑 데이터에 없는 경우 (티커라 가정)
+            else:
                 ticker = item
                 name = "미국종목"
                 
@@ -140,9 +143,8 @@ with st.sidebar:
     st.header("설정 (Settings)")
     market_choice = st.radio("시장 선택", ['한국 (KRX)', '미국 (US)'])
     
-    # 기본 입력 예시 구성
     default_input = "네이버, 005930, 카카오\nSK하이닉스" if market_choice == '한국 (KRX)' else "TEAM, AAPL, Microsoft"
-    stock_input = st.text_area("종목 입력 (이름, 티커, 종목코드 혼용 가능)", value=default_input, help="띄어쓰기, 줄바꿈, 쉼표로 자유롭게 구분하세요.")
+    stock_input = st.text_area("종목 입력 (이름, 티커, 종목코드 혼용 가능)", value=default_input)
     
     st.subheader("기간 설정")
     col1, col2 = st.columns(2)
@@ -207,17 +209,11 @@ if run_btn:
                     df.columns = df.columns.droplevel(1)
             
             if df.empty:
-                # 데이터가 비어있고 매핑에 실패한 항목에 대한 예외 알림
-                if market_choice == '한국 (KRX)' and not t_code.isdigit():
-                    st.error(f"❌ '{t_name}' 인식 실패: 서버 차단으로 인해 검색되지 않는 종목명입니다. '6자리 숫자 코드'로 직접 입력해 주세요.")
                 continue
             
-            # 주식 데이터를 정상적으로 가져왔다면 야후/FDR 기반으로 실제 이름 복원 시도
-            if t_name in ["국내종목", "미국종목"] and market_choice == '한국 (KRX)':
-                if t_code in krx_code_dict:
-                    t_name = krx_code_dict[t_code]
+            if t_name in ["국내종목", "미국종목"] and market_choice == '한국 (KRX)' and t_code in krx_code_dict:
+                t_name = krx_code_dict[t_code]
             
-            # 요구사항 반영: 최종 출력 포맷 정의 -> 종목명(티커or종목번호)
             display_name = f"{t_name} ({t_code})"
                 
             s_avg_up, s_avg_down, s_curr_ret, s_curr_sign = calculate_streak_averages(df)
@@ -259,7 +255,7 @@ if run_btn:
                 "주도주 여부": is_leader
             })
         except Exception as e:
-            pass # 에러 발생 시 앱이 깨지지 않고 부드럽게 넘어가도록 처리
+            pass
             
         progress_bar.progress((i + 1) / len(parsed_stocks))
         
