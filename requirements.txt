@@ -1,0 +1,7 @@
+streamlit
+yfinance
+pandas
+finance-datareader
+lxml
+html5lib
+beautifulsoup4
