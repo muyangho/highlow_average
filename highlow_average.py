@@ -8,35 +8,29 @@ import re
 from datetime import datetime, timedelta
 
 # --- 페이지 설정 ---
-st.set_page_config(page_title="주도주 포착 및 차익실현 분석기", layout="wide")
+st.set_page_config(page_title="주도주 포착 및 차익실현 분석기 (Quant Ver.)", layout="wide")
 
-# --- 캐시 초기화 버튼 (오류 발생 시 사용) ---
 with st.sidebar:
-    if st.button("🔄 종목 데이터 리셋 (오류시 클릭)", help="됐다가 안됐다가 할 때 눌러서 캐시를 초기화하세요."):
+    if st.button("🔄 종목 데이터 리셋 (오류시 클릭)", help="네트워크 오류나 캐시 꼬임 발생 시 눌러주세요."):
         st.cache_data.clear()
         st.success("캐시가 초기화되었습니다. 다시 분석을 실행해 주세요!")
 
-# --- 데이터 캐싱 및 로드 (안티-봇 헤더 적용) ---
+# --- 데이터 캐싱 및 로드 ---
 @st.cache_data(ttl=86400, show_spinner="증권사 서버에서 최신 종목 목록을 가져오는 중입니다...")
 def load_stock_listings():
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
-    
-    # 1. 한국 주식 로드
     try:
         krx = fdr.StockListing('KRX-DESC') 
     except Exception:
         try:
-            # [수정됨] requests에 브라우저 위장 헤더를 넣어서 차단 방지
             url = "http://kind.krx.co.kr/corpgeneral/corpList.do?method=download"
             res = requests.get(url, headers=headers, timeout=10)
             krx = pd.read_html(res.text, header=0)[0]
-            krx = krx[['회사명', '종목코드']]
             krx = krx.rename(columns={'회사명': 'Name', '종목코드': 'Code'})
             krx['Code'] = krx['Code'].astype(str).str.zfill(6)
         except Exception:
             krx = pd.DataFrame(columns=['Name', 'Code'])
 
-    # 2. 미국 주식 로드
     try:
         nasdaq = fdr.StockListing('NASDAQ')
         nyse = fdr.StockListing('NYSE')
@@ -53,7 +47,6 @@ def load_stock_listings():
 
 krx_dict, krx_code_dict, us_dict, us_code_dict = load_stock_listings()
 
-# --- 동적 API 검색 (안티-봇 헤더 적용) ---
 def search_naver_ticker(name):
     try:
         url = f"https://ac.finance.naver.com/ac?q={name}&q_enc=utf-8&st=111&se=1&tx=0"
@@ -66,108 +59,90 @@ def search_naver_ticker(name):
         pass
     return None
 
-# --- 헬퍼 함수 ---
 def parse_tickers(input_text, market):
     raw_list = re.split(r'[\n,\t\s]+', input_text.strip())
     raw_list = [x for x in raw_list if x]
-    
     parsed = []
     for item in raw_list:
-        ticker = item
-        name = item
-        
+        ticker, name = item, item
         if market == '한국 (KRX)':
             if item in krx_dict:
-                ticker = krx_dict[item]
-                name = item
+                ticker, name = krx_dict[item], item
             elif item in krx_code_dict:
-                name = krx_code_dict[item]
-                ticker = item
+                name, ticker = krx_code_dict[item], item
             else:
                 live_code = search_naver_ticker(item)
                 if live_code and live_code.isdigit():
-                    ticker = live_code
-                    name = item
+                    ticker, name = live_code, item
                 else:
-                    ticker = item
                     name = "국내종목"
         else:
             item = item.upper()
             if item in us_code_dict:
-                name = us_code_dict[item]
-                ticker = item
+                name, ticker = us_code_dict[item], item
             elif item in us_dict:
-                ticker = us_dict[item]
-                name = item
+                ticker, name = us_dict[item], item
             else:
-                ticker = item
                 name = "미국종목"
-                
         parsed.append({'name': name, 'ticker': ticker})
     return parsed
 
 def calculate_streak_averages(df):
     if df.empty or 'Close' not in df.columns:
         return 0.0, 0.0, 0.0, 0
-    
     df = df.copy()
     df['Return'] = df['Close'].pct_change()
     df = df.dropna()
-    
-    if df.empty:
-        return 0.0, 0.0, 0.0, 0
+    if df.empty: return 0.0, 0.0, 0.0, 0
     
     df['Sign'] = np.sign(df['Return'].round(4))
     df['Streak_ID'] = (df['Sign'] != df['Sign'].shift(1)).cumsum()
+    streak_returns = df.groupby('Streak_ID').apply(lambda x: float((1 + x['Return']).prod() - 1), include_groups=False).to_frame(name='Cumulative_Return')
+    streak_returns['Sign'] = df.groupby('Streak_ID')['Sign'].first()
     
-    streak_returns = df.groupby('Streak_ID').apply(
-        lambda x: float((1 + x['Return']).prod() - 1), include_groups=False
-    ).to_frame(name='Cumulative_Return')
-    
-    streak_signs = df.groupby('Streak_ID')['Sign'].first()
-    streak_returns['Sign'] = streak_signs
-    
-    up_streaks = streak_returns[streak_returns['Sign'] == 1]['Cumulative_Return']
-    down_streaks = streak_returns[streak_returns['Sign'] == -1]['Cumulative_Return']
-    
-    avg_up = float(up_streaks.mean()) if not up_streaks.empty else 0.0
-    avg_down = float(down_streaks.mean()) if not down_streaks.empty else 0.0
-    
-    current_streak_return = float(streak_returns.iloc[-1]['Cumulative_Return']) if not streak_returns.empty else 0.0
-    current_sign = int(streak_returns.iloc[-1]['Sign']) if not streak_returns.empty else 0
-    
-    return avg_up, avg_down, current_streak_return, current_sign
+    avg_up = float(streak_returns[streak_returns['Sign'] == 1]['Cumulative_Return'].mean()) if not streak_returns[streak_returns['Sign'] == 1].empty else 0.0
+    avg_down = float(streak_returns[streak_returns['Sign'] == -1]['Cumulative_Return'].mean()) if not streak_returns[streak_returns['Sign'] == -1].empty else 0.0
+    curr_ret = float(streak_returns.iloc[-1]['Cumulative_Return']) if not streak_returns.empty else 0.0
+    curr_sign = int(streak_returns.iloc[-1]['Sign']) if not streak_returns.empty else 0
+    return avg_up, avg_down, curr_ret, curr_sign
 
 def get_market_index(market, start_date, end_date):
     if market == '한국 (KRX)':
         df = fdr.DataReader('KS11', start_date, end_date)
-        name = "KOSPI 지수"
+        name = "KOSPI"
     else:
         df = yf.download('^GSPC', start=start_date, end=end_date, progress=False)
-        name = "S&P 500 지수"
+        name = "S&P 500"
         if isinstance(df.columns, pd.MultiIndex):
-            # 가장 안전하게 MultiIndex를 1차원으로 펴주는 방식
             df.columns = df.columns.get_level_values(0)
-            
     if df is not None and not df.empty and df.index.tz is not None:
         df.index = df.index.tz_localize(None)
-        
     return name, df
 
+def get_vix(start_date, end_date):
+    vix_df = yf.download('^VIX', start=start_date, end=end_date, progress=False)
+    if isinstance(vix_df.columns, pd.MultiIndex):
+        vix_df.columns = vix_df.columns.get_level_values(0)
+    if not vix_df.empty:
+        return float(vix_df['Close'].iloc[-1])
+    return 20.0 # 기본값
+
 # --- UI 레이아웃 ---
-st.title("📊 시장 주도주 포착 및 조정/반등 타이밍 분석기")
+st.title("📊 퀀트 기반 시장 주도주 및 차익실현 분석기")
+st.caption("단순 추세를 넘어 RSI, 200일 이격률, 거래량 및 매크로 공포지수(VIX)를 융합하여 조정 확률을 진단합니다.")
 
 with st.sidebar:
     st.header("설정 (Settings)")
     market_choice = st.radio("시장 선택", ['한국 (KRX)', '미국 (US)'])
     
     default_input = "네이버, 005930, 카카오\nSK하이닉스" if market_choice == '한국 (KRX)' else "TEAM, AAPL, MSFT"
-    stock_input = st.text_area("종목 입력 (이름, 티커, 종목코드 혼용 가능)", value=default_input)
+    stock_input = st.text_area("종목 입력 (이름, 티커, 종목코드 혼용)", value=default_input)
     
     st.subheader("기간 설정")
+    st.caption("⚠️ 200일 이격률 계산을 위해 시작일은 최소 1년 이전으로 설정하세요.")
     col1, col2 = st.columns(2)
     with col1:
-        start_date = st.date_input("전체 시작일", datetime.today() - timedelta(days=365))
+        start_date = st.date_input("전체 시작일", datetime.today() - timedelta(days=730)) # 2년으로 확장
     with col2:
         end_date = st.date_input("전체 종료일", datetime.today())
         
@@ -175,7 +150,7 @@ with st.sidebar:
     sub_start = st.date_input("부분 시작일", datetime.today() - timedelta(days=30))
     sub_end = st.date_input("부분 종료일", datetime.today())
     
-    run_btn = st.button("분석 실행", type='primary', use_container_width=True)
+    run_btn = st.button("🚀 정밀 분석 실행", type='primary', use_container_width=True)
 
 # --- 분석 로직 ---
 if run_btn:
@@ -185,35 +160,37 @@ if run_btn:
         
     parsed_stocks = parse_tickers(stock_input, market_choice)
     market_name, market_df = get_market_index(market_choice, start_date, end_date)
+    current_vix = get_vix(start_date, end_date)
     
     sub_start_dt = pd.to_datetime(sub_start)
     sub_end_dt = pd.to_datetime(sub_end)
     
-    st.subheader("🌐 시장 환경 분석")
+    st.subheader("🌐 매크로 시장 환경 진단")
     if market_df is not None and not market_df.empty:
         m_avg_up, m_avg_down, m_curr_ret, m_curr_sign = calculate_streak_averages(market_df)
         
+        # 시장 200일 이격률 계산
+        market_df['200MA'] = market_df['Close'].rolling(window=200).mean()
+        m_disparity = float(market_df['Close'].iloc[-1] / market_df['200MA'].iloc[-1] - 1) if not pd.isna(market_df['200MA'].iloc[-1]) else 0.0
+        
         m_sub_df = market_df[(market_df.index >= sub_start_dt) & (market_df.index <= sub_end_dt)]
-        if len(m_sub_df) > 1:
-            m_sub_ret = float(m_sub_df['Close'].iloc[-1] / m_sub_df['Close'].iloc[0] - 1)
-        else:
-            m_sub_ret = 0.0
+        m_sub_ret = float(m_sub_df['Close'].iloc[-1] / m_sub_df['Close'].iloc[0] - 1) if len(m_sub_df) > 1 else 0.0
         
-        col_m1, col_m2, col_m3, col_m4, col_m5 = st.columns(5)
-        col_m1.metric(f"{market_name} 평균 연속 상승률", f"{m_avg_up*100:.2f}%")
-        col_m2.metric("평균 연속 하락률 (조정치)", f"{m_avg_down*100:.2f}%")
-        
+        # 시장 과열도 스코어링 (VIX 및 이격률 기반)
+        market_status = "🟢 안정적 상승장"
+        if current_vix < 15 and m_disparity > 0.10:
+            market_status = "🚨 극단적 탐욕 (조정 임박)"
+        elif current_vix > 30 and m_disparity < -0.10:
+            market_status = "💡 극단적 공포 (반등 임박)"
+        elif m_curr_sign == -1:
+            market_status = "⚠️ 하락 추세 진행중"
+            
+        col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+        col_m1.metric(f"{market_name} 200일 이격률", f"{m_disparity*100:+.2f}%", help="+10% 이상 과열, -10% 이하 침체")
+        col_m2.metric("글로벌 공포지수 (VIX)", f"{current_vix:.2f}", help="25 이상 공포(매수기회), 15 이하 탐욕(차익실현)")
         sign_text = "상승중" if m_curr_sign == 1 else ("하락중" if m_curr_sign == -1 else "보합")
-        col_m3.metric(f"현재 추세 누적률 ({sign_text})", f"{m_curr_ret*100:.2f}%")
-        
-        col_m4.metric("부분 구간 수익률", f"{m_sub_ret*100:.2f}%")
-        
-        warning_level = "안전/초입"
-        if m_curr_sign == 1 and m_curr_ret >= m_avg_up * 0.8:
-            warning_level = "🚨 조정 임박 (과매수)"
-        elif m_curr_sign == -1 and m_curr_ret <= m_avg_down * 0.8:
-            warning_level = "💡 반등 임박 (과매도)"
-        col_m5.metric("현재 시장 상태", warning_level)
+        col_m3.metric(f"부분 구간 수익률", f"{m_sub_ret*100:+.2f}%")
+        col_m4.metric("현재 시장 상태", market_status)
     else:
         st.warning("시장 지수 데이터를 불러올 수 없습니다.")
 
@@ -236,7 +213,6 @@ if run_btn:
                 if isinstance(df.columns, pd.MultiIndex):
                     df.columns = df.columns.get_level_values(0)
             
-            # [수정됨] 데이터가 비어있으면 조용히 넘어가지 않고 실패 목록에 추가
             if df.empty:
                 failed_stocks.append(f"{t_name}({t_code})")
                 progress_bar.progress((i + 1) / len(parsed_stocks))
@@ -252,15 +228,11 @@ if run_btn:
                 
             s_avg_up, s_avg_down, s_curr_ret, s_curr_sign = calculate_streak_averages(df)
             
-            sub_df = df[(df.index >= sub_start_dt) & (df.index <= sub_end_dt)]
-            if len(sub_df) > 1:
-                sub_ret = float(sub_df['Close'].iloc[-1] / sub_df['Close'].iloc[0] - 1)
-            else:
-                sub_ret = 0.0
+            # 1. 200일 이격률 계산 (+10% 이상 고평가, -10% 이하 저평가)
+            df['200MA'] = df['Close'].rolling(window=200).mean()
+            disparity_200 = float(df['Close'].iloc[-1] / df['200MA'].iloc[-1] - 1) if not pd.isna(df['200MA'].iloc[-1]) else 0.0
             
-            df['Vol_20MA'] = df['Volume'].rolling(window=20).mean()
-            vol_ratio = float(df['Volume'].iloc[-1] / df['Vol_20MA'].iloc[-1]) if df['Vol_20MA'].iloc[-1] > 0 else 1.0
-            
+            # 2. RSI (14일) 계산 (70 이상 고평가, 30 이하 저평가)
             delta = df['Close'].diff()
             gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
             loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
@@ -268,41 +240,62 @@ if run_btn:
             rsi = 100 - (100 / (1 + rs))
             current_rsi = float(rsi.iloc[-1])
             
+            # 3. 거래량 배수 및 수익률
+            df['Vol_20MA'] = df['Volume'].rolling(window=20).mean()
+            vol_ratio = float(df['Volume'].iloc[-1] / df['Vol_20MA'].iloc[-1]) if df['Vol_20MA'].iloc[-1] > 0 else 1.0
+            
+            sub_df = df[(df.index >= sub_start_dt) & (df.index <= sub_end_dt)]
+            sub_ret = float(sub_df['Close'].iloc[-1] / sub_df['Close'].iloc[0] - 1) if len(sub_df) > 1 else 0.0
+            
             stock_20d_ret = float(df['Close'].iloc[-1] / df['Close'].iloc[-20] - 1) if len(df) >= 20 else 0.0
             market_20d_ret = float(market_df['Close'].iloc[-1] / market_df['Close'].iloc[-20] - 1) if (market_df is not None and len(market_df) >= 20) else 0.0
             relative_strength = stock_20d_ret - market_20d_ret
             
-            action = "관망"
-            if s_curr_sign == 1 and s_curr_ret >= s_avg_up * 0.85:
-                action = "⚠️ 차익실현 고려"
-            elif s_curr_sign == -1 and s_curr_ret <= s_avg_down * 0.85:
-                action = "🟢 저점매수 고려"
+            # 🔴 종합 퀀트 진단 로직 (사진 지표 반영)
+            score = 0
+            # 과열 시그널
+            if current_rsi >= 70: score -= 1
+            if disparity_200 >= 0.10: score -= 1
+            if s_curr_sign == 1 and s_curr_ret >= s_avg_up * 0.9: score -= 1
+            # 바닥 시그널
+            if current_rsi <= 30: score += 1
+            if disparity_200 <= -0.10: score += 1
+            if s_curr_sign == -1 and s_curr_ret <= s_avg_down * 0.9: score += 1
+            
+            action = "관망 (중립)"
+            if score <= -2:
+                action = "🚨 강력 차익실현 (고평가/과열)"
+            elif score == -1:
+                action = "⚠️ 분할 매도 고려"
+            elif score >= 2:
+                action = "🟢 적극 매수 (저평가/바닥)"
+            elif score == 1:
+                action = "💡 저점 매수 모니터링"
                 
-            is_leader = "🔥 주도주" if relative_strength > 0.05 and vol_ratio > 1.5 else "-"
+            is_leader = "🔥 주도주" if relative_strength > 0.05 and vol_ratio > 1.5 and disparity_200 > 0 else "-"
             
             results.append({
-                "종목명(티커or종목번호)": display_name,
-                "평균 연속 상승률": f"{s_avg_up*100:.2f}%",
-                "평균 연속 하락률": f"{s_avg_down*100:.2f}%",
-                "현재 연속 수익률": f"{s_curr_ret*100:.2f}%",
-                "부분 구간 수익률": f"{sub_ret*100:.2f}%",
+                "종목명(티커)": display_name,
+                "퀀트 진단결과": action,
+                "주도주 여부": is_leader,
+                "200일 이격률": f"{disparity_200*100:+.1f}%",
                 "RSI (14)": f"{current_rsi:.1f}",
-                "거래량 배수(20MA)": f"{vol_ratio:.1f}x",
-                "시장대비 상대수익": f"{relative_strength*100:.1f}%",
-                "조정/반등 진단": action,
-                "주도주 여부": is_leader
+                "현재 연속 수익률": f"{s_curr_ret*100:+.2f}%",
+                "부분 구간 수익률": f"{sub_ret*100:+.2f}%",
+                "거래량(20MA)": f"{vol_ratio:.1f}x",
+                "시장대비 상대수익": f"{relative_strength*100:+.1f}%"
             })
         except Exception as e:
             failed_stocks.append(f"{t_name}({t_code})")
             
         progress_bar.progress((i + 1) / len(parsed_stocks))
         
-    # [수정됨] 어떤 종목이 실패했는지 명확하게 알려주는 알림창 추가
     if failed_stocks:
         st.warning(f"⚠️ 다음 종목들은 서버 오류 또는 티커 인식 실패로 제외되었습니다: {', '.join(failed_stocks)}")
         
     if results:
         res_df = pd.DataFrame(results)
+        # 진단 결과가 잘 보이도록 스타일링 적용
         st.dataframe(res_df, use_container_width=True)
     else:
         st.error("조회 가능한 주식 데이터가 없습니다. 좌측 메뉴의 [🔄 종목 데이터 리셋] 버튼을 눌러 캐시를 초기화한 후 다시 시도해 주세요.")
