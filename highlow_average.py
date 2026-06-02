@@ -23,7 +23,7 @@ def load_stock_listings():
             krx = pd.read_html(url, header=0)[0]
             krx = krx[['회사명', '종목코드']]
             krx = krx.rename(columns={'회사명': 'Name', '종목코드': 'Code'})
-            krx['Code'] = krx['Code'].astype(str).str.zfill(6) # 6자리 숫자로 0 채우기
+            krx['Code'] = krx['Code'].astype(str).str.zfill(6)
         except Exception:
             krx = pd.DataFrame(columns=['Name', 'Code'])
 
@@ -44,7 +44,7 @@ def load_stock_listings():
 
 krx_dict, krx_code_dict, us_dict, us_code_dict = load_stock_listings()
 
-# --- 동적 API 검색 (최후의 보루) ---
+# --- 동적 API 검색 ---
 def search_naver_ticker(name):
     """로컬 딕셔너리에 종목이 없을 경우 네이버 금융 API를 통해 실시간으로 코드를 찾아옵니다."""
     try:
@@ -52,7 +52,7 @@ def search_naver_ticker(name):
         res = requests.get(url, timeout=3)
         data = res.json()
         if data.get('items') and len(data['items'][0]) > 0:
-            return data['items'][0][0][1] # 검색된 첫 번째 종목코드 반환
+            return data['items'][0][0][1]
     except Exception:
         pass
     return None
@@ -75,7 +75,6 @@ def parse_tickers(input_text, market):
                 name = krx_code_dict[item]
                 ticker = item
             else:
-                # [자동화 2] 딕셔너리에 없으면 네이버 API 실시간 호출
                 live_code = search_naver_ticker(item)
                 if live_code and live_code.isdigit():
                     ticker = live_code
@@ -171,22 +170,28 @@ if run_btn:
     st.subheader("🌐 시장 환경 분석")
     if market_df is not None and not market_df.empty:
         m_avg_up, m_avg_down, m_curr_ret, m_curr_sign = calculate_streak_averages(market_df)
+        
+        # 시장 지수의 서브 레인지(부분 구간) 수익률 계산
         m_sub_df = market_df.loc[sub_start:sub_end]
         m_sub_ret = (m_sub_df['Close'].iloc[-1] / m_sub_df['Close'].iloc[0] - 1) if len(m_sub_df) > 1 else 0
         
-        col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+        # UI 레이아웃 5칸으로 확장
+        col_m1, col_m2, col_m3, col_m4, col_m5 = st.columns(5)
         col_m1.metric(f"{market_name} 평균 연속 상승률", f"{m_avg_up*100:.2f}%")
         col_m2.metric("평균 연속 하락률 (조정치)", f"{m_avg_down*100:.2f}%")
         
         sign_text = "상승중" if m_curr_sign == 1 else ("하락중" if m_curr_sign == -1 else "보합")
         col_m3.metric(f"현재 추세 누적률 ({sign_text})", f"{m_curr_ret*100:.2f}%")
         
+        # 새롭게 추가된 부분 구간 수익률 UI
+        col_m4.metric(f"부분 구간 수익률", f"{m_sub_ret*100:.2f}%")
+        
         warning_level = "안전/초입"
         if m_curr_sign == 1 and m_curr_ret >= m_avg_up * 0.8:
             warning_level = "🚨 조정 임박 (과매수)"
         elif m_curr_sign == -1 and m_curr_ret <= m_avg_down * 0.8:
             warning_level = "💡 반등 임박 (과매도)"
-        col_m4.metric("현재 시장 상태", warning_level)
+        col_m5.metric("현재 시장 상태", warning_level)
     else:
         st.warning("시장 지수 데이터를 불러올 수 없습니다.")
 
