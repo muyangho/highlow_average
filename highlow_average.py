@@ -10,7 +10,7 @@ import warnings
 warnings.filterwarnings('ignore')
 
 # --- 페이지 설정 ---
-st.set_page_config(page_title="주도주 추세 & 세력 장난질 판독기", layout="wide")
+st.set_page_config(page_title="주도주 추세 & 퀀트 지표 총망라 분석기", layout="wide")
 
 with st.sidebar:
     if st.button("🔄 종목 데이터 리셋 (오류시 클릭)"):
@@ -97,9 +97,28 @@ def calculate_fear_greed_score(vix, market_rsi, market_20ma_disparity):
     d_score = max(0, min(100, (market_20ma_disparity + 0.05) / 0.10 * 100))
     return (v_score + r_score + d_score) / 3
 
+def calculate_streak_averages(df):
+    if df.empty or 'Close' not in df.columns or len(df) < 2:
+        return 0.0, 0.0, 0.0, 0
+    df = df.copy()
+    df['Return'] = df['Close'].pct_change()
+    df = df.dropna()
+    if df.empty: return 0.0, 0.0, 0.0, 0
+    
+    df['Sign'] = np.sign(df['Return'].round(4))
+    df['Streak_ID'] = (df['Sign'] != df['Sign'].shift(1)).cumsum()
+    streak_returns = df.groupby('Streak_ID').apply(lambda x: float((1 + x['Return']).prod() - 1), include_groups=False).to_frame(name='Cumulative_Return')
+    streak_returns['Sign'] = df.groupby('Streak_ID')['Sign'].first()
+    
+    avg_up = float(streak_returns[streak_returns['Sign'] == 1]['Cumulative_Return'].mean()) if not streak_returns[streak_returns['Sign'] == 1].empty else 0.0
+    avg_down = float(streak_returns[streak_returns['Sign'] == -1]['Cumulative_Return'].mean()) if not streak_returns[streak_returns['Sign'] == -1].empty else 0.0
+    curr_ret = float(streak_returns.iloc[-1]['Cumulative_Return']) if not streak_returns.empty else 0.0
+    curr_sign = int(streak_returns.iloc[-1]['Sign']) if not streak_returns.empty else 0
+    return avg_up, avg_down, curr_ret, curr_sign
+
 # --- UI 레이아웃 ---
-st.title("🔥 대세 주도주 & 시간외 장난질 판독기")
-st.caption("장전/프리마켓의 갭(Gap) 상승과 정규장 흐름을 분리 분석하여 세력의 설거지 패턴을 걸러내고 최적의 매수 타점을 제시합니다.")
+st.title("🔥 대세 주도주 & 퀀트 지표 총망라 분석기")
+st.caption("과열 지표(RSI/이격률/볼린저밴드), 연속 상승률, 수급(OBV), 그리고 장전 갭(Gap) 패턴을 모두 종합하여 최적의 타점을 분석합니다.")
 
 with st.sidebar:
     st.header("설정 (Settings)")
@@ -108,7 +127,7 @@ with st.sidebar:
     stock_input = st.text_area("종목 입력", value=default_input)
     
     st.subheader("기간 설정")
-    st.caption("장기 이평선(120일) 계산을 위해 전체 기간을 1년 이상으로 넉넉히 잡으세요.")
+    st.caption("200일선 계산을 위해 전체 기간은 1년 이상 유지하세요.")
     col1, col2 = st.columns(2)
     with col1: start_date = st.date_input("전체 시작일", datetime.today() - timedelta(days=500))
     with col2: end_date = st.date_input("전체 종료일", datetime.today())
@@ -116,7 +135,7 @@ with st.sidebar:
     st.divider()
     sub_start = st.date_input("부분 분석 시작일", datetime.today() - timedelta(days=30))
     sub_end = st.date_input("📌 기준일(종료일)", datetime.today())
-    run_btn = st.button("🚀 정밀 타점 분석 실행", type='primary', use_container_width=True)
+    run_btn = st.button("🚀 전체 지표 분석 실행", type='primary', use_container_width=True)
 
 # --- 분석 로직 ---
 if run_btn:
@@ -156,7 +175,7 @@ if run_btn:
             st.progress(int(fg_score), text=f"🔥 탐욕(100) ↔ 🧊 공포(0) | 현재 스코어: {fg_score:.1f}점 ({fg_status})")
             
     st.divider()
-    st.subheader(f"🎯 시간외/정규장 갭 분석 및 최적 매매 타점 (기준일: {sub_end_dt.strftime('%Y-%m-%d')})")
+    st.subheader(f"🎯 개별 종목 지표 총망라 및 전략 (기준일: {sub_end_dt.strftime('%Y-%m-%d')})")
     
     results = []
     progress_bar = st.progress(0)
@@ -177,107 +196,38 @@ if run_btn:
                 
             if df_full.index.tz is not None: df_full.index = df_full.index.tz_localize(None)
             df_as_of = df_full[df_full.index <= sub_end_dt].copy()
-            if len(df_as_of) < 120: continue # 장기 이평선 계산을 위해 데이터 부족 시 스킵
+            if len(df_as_of) < 20: continue # 최소 데이터 보호
             
             if t_name in ["국내종목", "미국종목"] and market_choice == '한국 (KRX)' and t_code in krx_code_dict:
                 t_name = krx_code_dict[t_code]
             
             display_name = f"{t_name} ({t_code})"
             
-            # --- OHLC (시가, 고가, 저가, 종가) 및 갭(Gap) 분석 ---
+            # --- 1. OHLC 및 갭(Gap) 분석 ---
             today_open = float(df_as_of['Open'].iloc[-1])
             today_close = float(df_as_of['Close'].iloc[-1])
-            prev_close = float(df_as_of['Close'].iloc[-2])
+            prev_close = float(df_as_of['Close'].iloc[-2]) if len(df_as_of) > 1 else today_open
             
-            # 장전 갭 (Pre-market/시간외 상승폭)
             gap_pct = (today_open - prev_close) / prev_close
-            # 정규장 변동폭 (시초가 대비 종가)
             intraday_pct = (today_close - today_open) / today_open
+            is_up_day = today_close > prev_close 
+            is_yin_candle = today_close < today_open 
             
-            is_up_day = today_close > prev_close # 전일 대비 양봉 여부
-            is_yin_candle = today_close < today_open # 캔들 음봉(파란불) 여부
-            
-            # --- 이동평균선 및 장기 대세 분석 ---
+            # --- 2. 이동평균선 및 이격률 분석 ---
             df_as_of['5MA'] = df_as_of['Close'].rolling(window=5).mean()
             df_as_of['20MA'] = df_as_of['Close'].rolling(window=20).mean()
             df_as_of['120MA'] = df_as_of['Close'].rolling(window=120).mean()
+            df_as_of['200MA'] = df_as_of['Close'].rolling(window=200).mean()
             
             is_above_5ma = today_close > df_as_of['5MA'].iloc[-1]
+            long_term_bull = len(df_as_of) >= 120 and (today_close > df_as_of['120MA'].iloc[-1]) and (df_as_of['120MA'].iloc[-1] > df_as_of['120MA'].iloc[-20])
             
-            # 장기 대세 상승 여부: 120일선이 우상향 중이고 주가가 그 위에 있는가?
-            long_term_bull = (today_close > df_as_of['120MA'].iloc[-1]) and (df_as_of['120MA'].iloc[-1] > df_as_of['120MA'].iloc[-20])
+            disparity_20 = float(today_close / df_as_of['20MA'].iloc[-1] - 1) if not pd.isna(df_as_of['20MA'].iloc[-1]) else 0.0
+            disparity_200 = float(today_close / df_as_of['200MA'].iloc[-1] - 1) if len(df_as_of) >= 200 and not pd.isna(df_as_of['200MA'].iloc[-1]) else 0.0
             
-            # --- 볼린저 밴드, 거래량, OBV ---
+            # --- 3. 볼린저 밴드, 거래량, OBV, RSI ---
             df_as_of['20STD'] = df_as_of['Close'].rolling(window=20).std()
             df_as_of['BB_Upper'] = df_as_of['20MA'] + (df_as_of['20STD'] * 2)
             df_as_of['BB_Lower'] = df_as_of['20MA'] - (df_as_of['20STD'] * 2)
             
-            df_as_of['Vol_20MA'] = df_as_of['Volume'].rolling(window=20).mean()
-            vol_ratio = float(df_as_of['Volume'].iloc[-1] / df_as_of['Vol_20MA'].iloc[-1]) if df_as_of['Vol_20MA'].iloc[-1] > 0 else 1.0
-            
-            df_as_of['OBV'] = (np.sign(df_as_of['Close'].diff()) * df_as_of['Volume']).fillna(0).cumsum()
-            obv_trend = "상승(매집중)" if df_as_of['OBV'].iloc[-1] > df_as_of['OBV'].iloc[-20] else "하락(이탈중)"
-            
-            # --- 🔴 신규: 장기 대세 & 타점 전략 코멘트 생성 로직 ---
-            action = "관망"
-            strategy = ""
-            
-            # 1. 최우선: 장기 대세 펀더멘털 판별
-            if long_term_bull and obv_trend == "상승(매집중)":
-                action = "🌟 장기 대세 상승 (강력 매수)"
-                strategy = "[장기 뷰] 120일선 우상향 & 스마트머니(OBV) 매집 중인 튼튼한 종목입니다. 잔파도에 털리지 마세요. "
-            elif not long_term_bull:
-                action = "⚠️ 장기 역배열 (보수적 접근)"
-                strategy = "[장기 뷰] 120일선 아래에 있거나 우하향 중입니다. 단기 트레이딩으로만 접근하세요. "
-            
-            # 2. 프리마켓 갭(Gap) 및 정규장 설거지 판독
-            if gap_pct > 0.015 and is_yin_candle: # 1.5% 이상 갭상승 출발 후 정규장 음봉
-                strategy += f"⚠️ 장전(프리마켓/시간외)에 {gap_pct*100:.1f}%나 호가를 띄우고, 정규장에서는 오히려 {intraday_pct*100:.1f}% 하락(음봉)하며 개미에게 물량을 넘기는 패턴이 포착되었습니다."
-                if vol_ratio > 1.5:
-                    action = "🚨 세력 설거지 주의 (매도)"
-                    strategy += " 거래량까지 터졌으므로 시초가 추격 매수는 절대 금지이며, 보유자는 비중을 줄이세요."
-                else:
-                    strategy += " 시초가 돌파 매매는 위험하니 장 후반 종가 부근까지 관망하세요."
-                    
-            elif gap_pct < -0.015 and not is_yin_candle: # 1.5% 이상 갭하락 후 정규장 양봉
-                strategy += f"💡 장전에 {-gap_pct*100:.1f}% 인위적으로 누른 후 정규장에서 매집(양봉)하는 개미털기 패턴입니다."
-                if is_above_5ma:
-                    action = "🟢 세력 매집 (매수 타점)"
-                    strategy += " 5일선 지지가 확인되었으니 시초가 하락을 기회 삼아 분할 매수하기 좋은 타점입니다."
-                    
-            # 3. 일반적인 5일선 추세 기반 타점
-            else:
-                if is_above_5ma:
-                    if not is_up_day and vol_ratio < 0.8:
-                        strategy += "현재 5일선 위에서 거래량 없이 건강하게 숨고르기(눌림목) 중입니다. 5일선 근처에서 매수하기 좋은 타점입니다."
-                    elif is_up_day and vol_ratio > 1.5:
-                        strategy += "거래량이 터지며 5일선 위로 상승 중입니다. 달리는 말에 올라타도 좋으나, 볼린저 밴드 상단 저항에 주의하며 단기로 대응하세요."
-                    else:
-                        strategy += "무난하게 5일선 추세를 타는 중입니다. 5일선 이탈 전까지는 편안하게 홀딩하세요."
-                else:
-                    strategy += "단기 5일선이 깨졌습니다. 20일선(또는 볼린저 하단)까지 밀릴 수 있으므로 의미 있는 양봉 반등이 나올 때까지 신규 매수는 대기하세요."
-
-            # 최종 표 데이터 입력
-            results.append({
-                "종목명(티커)": display_name,
-                "현재 포지션": action,
-                "매매 타점 & 전략 (시간외/정규장 분석)": strategy, # 🔴 상세 전략 출력
-                "장전/시초가 갭": f"{gap_pct*100:+.2f}%",
-                "정규장 변동(시가대비)": f"{intraday_pct*100:+.2f}%",
-                "OBV 수급(20일)": obv_trend,
-                "5일선/120일선": "✅/✅" if is_above_5ma and long_term_bull else ("✅/❌" if is_above_5ma else "❌/❌"),
-                "당일 거래량": f"{vol_ratio:.1f}배",
-            })
-        except Exception as e:
-            failed_stocks.append(f"{t_name}({t_code})")
-            
-        progress_bar.progress((i + 1) / len(parsed_stocks))
-        
-    if failed_stocks:
-        st.warning(f"⚠️ 상장 폐지 또는 120일 미만 데이터 부족으로 제외된 종목: {', '.join(failed_stocks)}")
-        
-    if results:
-        res_df = pd.DataFrame(results)
-        st.dataframe(res_df, use_container_width=True)
-    else:
-        st.error("조건에 맞는 결과가 없습니다.")
+            bb_upper = df_as_of['BB_Upper'].iloc[-1]
