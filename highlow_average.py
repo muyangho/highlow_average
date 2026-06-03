@@ -10,10 +10,10 @@ import warnings
 warnings.filterwarnings('ignore')
 
 # --- 페이지 설정 ---
-st.set_page_config(page_title="주도주 정밀 타점 & 하락장 생존 분석기", layout="wide")
+st.set_page_config(page_title="주도주 추세 추종 & 스마트 수급 분석기", layout="wide")
 
 with st.sidebar:
-    if st.button("🔄 종목 데이터 리셋 (오류시 클릭)", help="데이터 꼬임 발생 시 눌러주세요."):
+    if st.button("🔄 종목 데이터 리셋 (오류시 클릭)"):
         st.cache_data.clear()
         st.success("캐시가 초기화되었습니다. 다시 분석을 실행해 주세요!")
 
@@ -100,8 +100,8 @@ def calculate_fear_greed_score(vix, market_rsi, market_20ma_disparity):
     return (v_score + r_score + d_score) / 3
 
 # --- UI 레이아웃 ---
-st.title("🔥 시장 붕괴 방어주 포착 & 정밀 타점 분석기")
-st.caption("시장 전체가 무너질 때 나홀로 버티는 진짜 주도주를 찾고, 과열 종목은 정확히 익절하도록 가이드합니다.")
+st.title("🔥 주도주 모멘텀 & 스마트 수급 분석기")
+st.caption("AI가 5일선 지지 여부, 캔들의 방향(음봉/양봉), 그리고 거래량의 폭발/축소를 종합하여 구체적인 코멘트를 달아줍니다.")
 
 with st.sidebar:
     st.header("설정 (Settings)")
@@ -117,7 +117,7 @@ with st.sidebar:
     st.divider()
     sub_start = st.date_input("부분 분석 시작일", datetime.today() - timedelta(days=30))
     sub_end = st.date_input("📌 기준일(종료일)", datetime.today())
-    run_btn = st.button("🚀 정밀 타점 분석", type='primary', use_container_width=True)
+    run_btn = st.button("🚀 정밀 분석 실행", type='primary', use_container_width=True)
 
 # --- 분석 로직 ---
 if run_btn:
@@ -146,26 +146,27 @@ if run_btn:
             m_rs = (m_delta.where(m_delta > 0, 0)).rolling(window=14).mean() / (-m_delta.where(m_delta < 0, 0)).rolling(window=14).mean()
             current_m_rsi = float(100 - (100 / (1 + m_rs)).iloc[-1]) if len(m_df_as_of) >= 15 else 50.0
             
-            m_20d_ret = float(m_df_as_of['Close'].iloc[-1] / m_df_as_of['Close'].iloc[-20] - 1) if len(m_df_as_of) >= 20 else 0.0
-            
+            m_sub_df = m_df_as_of[m_df_as_of.index >= sub_start_dt]
+            m_sub_ret = float(m_sub_df['Close'].iloc[-1] / m_sub_df['Close'].iloc[0] - 1) if len(m_sub_df) > 1 else 0.0
             current_vix = float(vix_as_of['Close'].iloc[-1]) if vix_as_of is not None and not vix_as_of.empty else 20.0
+            
             fg_score = calculate_fear_greed_score(current_vix, current_m_rsi, m_disp_20)
             
             fg_status = "중립 (추세 지속 가능)"
-            if fg_score <= 25: fg_status = "😨 극단적 공포 (시장 전반 줍줍 찬스)"
+            if fg_score <= 25: fg_status = "😨 극단적 공포 (단기 낙폭 과대 / 줍줍)"
             elif fg_score <= 45: fg_status = "📉 공포 (반등 모색 구간)"
-            elif fg_score >= 80: fg_status = "🚨 단기 과열 극심 (조정 임박, 현금화)"
+            elif fg_score >= 80: fg_status = "🚨 단기 과열 극심 (조정 임박)"
             elif fg_score >= 60: fg_status = "📈 탐욕 (추가 상승 여력 있으나 주의)"
             
             col_m1, col_m2, col_m3, col_m4 = st.columns(4)
             col_m1.metric(f"공포탐욕지수", f"{fg_score:.1f}점", fg_status)
             col_m2.metric("VIX (변동성 지수)", f"{current_vix:.2f}")
-            col_m3.metric(f"{market_name} 최근 20일 수익률", f"{m_20d_ret*100:+.2f}%")
-            col_m4.metric(f"{market_name} RSI", f"{current_m_rsi:.1f}")
+            col_m3.metric(f"{market_name} 단기 이격률", f"{m_disp_20*100:+.2f}%")
+            col_m4.metric(f"지정 구간 시장수익률", f"{m_sub_ret*100:+.2f}%")
             st.progress(int(fg_score), text=f"🔥 단기 과열(100) ↔ 🧊 단기 침체(0) | 현재 스코어: {fg_score:.1f}점")
             
     st.divider()
-    st.subheader(f"🎯 개별 종목 수급 및 타점 진단 (기준일: {sub_end_dt.strftime('%Y-%m-%d')})")
+    st.subheader(f"🎯 개별 종목 스마트 수급 상세 진단 (기준일: {sub_end_dt.strftime('%Y-%m-%d')})")
     
     results = []
     progress_bar = st.progress(0)
@@ -186,17 +187,17 @@ if run_btn:
                 
             if df_full.index.tz is not None: df_full.index = df_full.index.tz_localize(None)
             df_as_of = df_full[df_full.index <= sub_end_dt].copy()
-            if len(df_as_of) < 20: continue
+            if df_as_of.empty: continue
             
             if t_name in ["국내종목", "미국종목"] and market_choice == '한국 (KRX)' and t_code in krx_code_dict:
                 t_name = krx_code_dict[t_code]
             
             display_name = f"{t_name} ({t_code})"
             
-            # --- 기본 차트 지표 ---
+            # --- 지표 계산 ---
             current_close = float(df_as_of['Close'].iloc[-1])
-            prev_close = float(df_as_of['Close'].iloc[-2])
-            is_up_day = current_close > prev_close
+            prev_close = float(df_as_of['Close'].iloc[-2]) if len(df_as_of) > 1 else current_close
+            is_up_day = current_close > prev_close # 양봉(상승) 여부
             
             df_as_of['5MA'] = df_as_of['Close'].rolling(window=5).mean()
             df_as_of['20MA'] = df_as_of['Close'].rolling(window=20).mean()
@@ -205,79 +206,78 @@ if run_btn:
             df_as_of['20STD'] = df_as_of['Close'].rolling(window=20).std()
             df_as_of['BB_Upper'] = df_as_of['20MA'] + (df_as_of['20STD'] * 2)
             df_as_of['BB_Lower'] = df_as_of['20MA'] - (df_as_of['20STD'] * 2)
-            bb_upper, bb_lower = df_as_of['BB_Upper'].iloc[-1], df_as_of['BB_Lower'].iloc[-1]
+            bb_upper = df_as_of['BB_Upper'].iloc[-1]
+            bb_lower = df_as_of['BB_Lower'].iloc[-1]
             bb_pos = float((current_close - bb_lower) / (bb_upper - bb_lower)) if not pd.isna(bb_upper) and bb_upper != bb_lower else 0.5
             
             delta = df_as_of['Close'].diff()
             rs = (delta.where(delta > 0, 0)).rolling(window=14).mean() / (-delta.where(delta < 0, 0)).rolling(window=14).mean()
             current_rsi = float(100 - (100 / (1 + rs)).iloc[-1]) if len(df_as_of) >= 15 else 50.0
             
-            # --- 🔴 거래량 정밀 해석 ---
+            # 거래량 및 OBV (수급)
             df_as_of['Vol_20MA'] = df_as_of['Volume'].rolling(window=20).mean()
-            vol_ratio = float(df_as_of['Volume'].iloc[-1] / df_as_of['Vol_20MA'].iloc[-1]) if df_as_of['Vol_20MA'].iloc[-1] > 0 else 1.0
+            vol_ratio = float(df_as_of['Volume'].iloc[-1] / df_as_of['Vol_20MA'].iloc[-1]) if len(df_as_of) >= 20 and df_as_of['Vol_20MA'].iloc[-1] > 0 else 1.0
             
-            if is_up_day and vol_ratio >= 1.5: vol_sig = "🔴 강한 매수세 (돌파/매집)"
-            elif not is_up_day and vol_ratio >= 1.5: vol_sig = "🚨 강한 매도세 (세력/투매)"
-            elif is_up_day and vol_ratio < 0.8: vol_sig = "⚠️ 상승 동력 약화 (페이크 의심)"
-            elif not is_up_day and vol_ratio < 0.8: vol_sig = "💡 긍정적: 거래량 마른 조정"
-            else: vol_sig = "평이함 (특이사항 없음)"
-
-            # --- 🔴 OBV 수급 및 다이버전스 ---
             df_as_of['OBV'] = (np.sign(df_as_of['Close'].diff()) * df_as_of['Volume']).fillna(0).cumsum()
-            price_trend = "상승" if current_close >= df_as_of['Close'].iloc[-20] else "하락"
-            obv_trend = "상승" if df_as_of['OBV'].iloc[-1] >= df_as_of['OBV'].iloc[-20] else "하락"
+            obv_trend = "수급유입 (상승)" if len(df_as_of) >= 20 and df_as_of['OBV'].iloc[-1] > df_as_of['OBV'].iloc[-20] else "수급이탈 (하락)"
             
-            if price_trend == "하락" and obv_trend == "상승": obv_sig = "🔥 숨은 매수세 (세력 매집중)"
-            elif price_trend == "상승" and obv_trend == "하락": obv_sig = "⚠️ 숨은 매도세 (개미 꼬시기)"
-            elif price_trend == "상승" and obv_trend == "상승": obv_sig = "🚀 수급 동반 탄탄한 상승"
-            else: obv_sig = "📉 수급 이탈 (하락 추세)"
-
-            # --- 🔴 하락장 방어주 판별 로직 ---
             stock_20d_ret = float(current_close / df_as_of['Close'].iloc[-20] - 1) if len(df_as_of) >= 20 else 0.0
-            relative_strength = stock_20d_ret - m_20d_ret
+            market_20d_ret = float(m_df_as_of['Close'].iloc[-1] / m_df_as_of['Close'].iloc[-20] - 1) if 'm_df_as_of' in locals() and len(m_df_as_of) >= 20 else 0.0
+            relative_strength = stock_20d_ret - market_20d_ret
             
-            is_leader = "-"
-            # 1. 시장이 상승장일 때 일반적인 주도주
-            if m_20d_ret >= 0 and relative_strength > 0.05 and obv_trend == "상승" and is_above_5ma:
-                is_leader = "🚀 상승장 주도주"
-            # 2. 시장이 하락장일 때 살아남는 방어 대장주 (핵심)
-            elif m_20d_ret < -0.02 and stock_20d_ret > 0 and is_above_5ma and obv_trend == "상승":
-                is_leader = "🛡️ 폭락장 생존주 (방어 대장)"
+            # 🔴 사용자 맞춤형 텍스트 생성 로직 (상세 코멘트)
+            comment = ""
+            action = "🟢 추세 양호 (홀딩)"
+            
+            if is_above_5ma:
+                if is_up_day and vol_ratio >= 1.2:
+                    comment = f"5일선 지지 중 거래량이 평소 대비 {vol_ratio:.1f}배 터진 양봉 발생. 추가 상승 랠리가 기대됩니다."
+                elif not is_up_day and vol_ratio <= 0.8:
+                    comment = f"5일선 위에서 거래량이 뚝 끊긴({vol_ratio:.1f}배) 음봉 조정. 세력 이탈 없는 전형적인 '건강한 눌림목' 타점입니다."
+                elif not is_up_day and vol_ratio > 1.2:
+                    comment = f"5일선 위지만 거래량이 {vol_ratio:.1f}배 터진 음봉 마감. 단기 저항(매도세)이 강하므로 내일 5일선 이탈 여부를 예의주시하세요."
+                else:
+                    comment = "5일선을 타고 무난하게 상승 추세를 이어가고 있습니다."
+                
+                # RSI 70 이상이어도 5일선 위에 있으면 안 팔게 함
+                if current_rsi >= 70:
+                    action = "🔥 대세 상승 (강력 홀딩)"
+                    comment = f"[RSI {current_rsi:.0f} 단기 과열] 그러나 " + comment
+                    
+            else: # 5일선 이탈 시
+                if not is_up_day and vol_ratio >= 1.5:
+                    action = "🚨 세력 차익실현 (강력 매도)"
+                    comment = f"5일선이 깨지면서 거래량이 {vol_ratio:.1f}배 폭발한 대형 음봉! 전형적인 세력 차익실현(설거지) 징후이므로 즉각 매도를 권장합니다."
+                elif is_up_day and vol_ratio >= 1.5:
+                    action = "💡 강력 반등 (매수 검토)"
+                    comment = f"5일선 아래에서 거래량이 {vol_ratio:.1f}배 터진 양봉 발생. 바닥에서 강력한 저가 매수세가 유입되었습니다."
+                elif not is_up_day and vol_ratio < 1.0:
+                    action = "⚠️ 단기 하락 추세"
+                    comment = "5일선을 이탈하여 흘러내리는 중입니다. 의미 있는 거래량 반등이 나올 때까지 섣불리 줍지 마세요."
+                else:
+                    action = "⚠️ 단기 하락 추세"
+                    comment = "단기 추세(5일선)가 꺾였습니다. 리스크 관리가 필요합니다."
 
-            # --- 🔴 프로 타점 채점 시스템 (익절/재매수 명문화) ---
-            score = 0
-            
-            # 매수 가점
-            if current_rsi < 35: score += 1
-            if bb_pos <= 0.05: score += 1
-            if "숨은 매수세" in obv_sig or "수급 동반" in obv_sig: score += 1
-            if "거래량 마른 조정" in vol_sig or "강한 매수세" in vol_sig: score += 1
-            
-            # 매도 감점
-            if not is_above_5ma and current_rsi > 60: score -= 2 
-            if current_rsi > 70 and not is_above_5ma: score -= 1 
-            if bb_pos >= 0.95: score -= 1
-            if "강한 매도세" in vol_sig: score -= 2
-            if "숨은 매도세" in obv_sig: score -= 2
+            if current_rsi <= 30 and action != "💡 강력 반등 (매수 검토)":
+                action = "🟢 바닥 확인 중 (관망)"
+                comment = f"[RSI {current_rsi:.0f} 투매 구간] " + comment
 
-            # 최종 액션 판별 (사용자 요청 반영)
-            if score >= 3: action = "🔥 강력 매수 (눌림목/바닥 수급확인)"
-            elif score in [1, 2]: action = "🟢 분할 매수 (조정 후 반등 노림)"
-            elif score == 0: 
-                action = "🟢 추세 홀딩 (보유자 영역)" if is_above_5ma else "👀 관망 (방향성 탐색중)"
-            elif score in [-1, -2]: action = "⚠️ 분할 익절 (저항/단기꺾임)"
-            else: action = "🚨 초과열 (전량 익절, 조정 시 재매수)" # 확실한 익절 및 재매수 지침
+            is_leader = "🚀 주도주" if relative_strength > 0.05 and obv_trend == "수급유입 (상승)" and is_above_5ma else "-"
+            
+            if bb_pos >= 1.0: bb_text = "상단 돌파"
+            elif bb_pos <= 0.0: bb_text = "하단 이탈"
+            else: bb_text = f"밴드 내 ({bb_pos*100:.0f}%)"
 
             results.append({
                 "종목명(티커)": display_name,
-                "주도주/방어주 상태": is_leader,
-                "최종 타점 가이드": action,
-                "거래량 해석 (Quality)": vol_sig,
-                "OBV 수급 (Divergence)": obv_sig,
+                "현재 추세 진단": action,
+                "상세 분석 코멘트": comment,  # 🔴 핵심 추가 사항
+                "주도주 여부": is_leader,
                 "RSI(14)": f"{current_rsi:.0f}",
+                "OBV 수급(20일)": obv_trend,
                 "5일선 유지": "✅ 지지중" if is_above_5ma else "❌ 이탈",
-                "당일 거래량": f"평소의 {vol_ratio:.1f}배",
-                "볼린저밴드 위치": f"{bb_pos*100:.0f}% 위치"
+                "당일 거래량": f"{vol_ratio:.1f}배 {'(상승)' if is_up_day else '(하락)'}",
+                "시장대비 상대수익": f"{relative_strength*100:+.1f}%"
             })
         except Exception as e:
             failed_stocks.append(f"{t_name}({t_code})")
