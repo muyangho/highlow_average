@@ -231,3 +231,96 @@ if run_btn:
             df_as_of['BB_Lower'] = df_as_of['20MA'] - (df_as_of['20STD'] * 2)
             
             bb_upper = df_as_of['BB_Upper'].iloc[-1]
+            bb_lower = df_as_of['BB_Lower'].iloc[-1]
+            bb_pos = float((today_close - bb_lower) / (bb_upper - bb_lower)) if not pd.isna(bb_upper) and bb_upper != bb_lower else 0.5
+            if bb_pos >= 1.0: bb_text = "상단 돌파(과열)"
+            elif bb_pos <= 0.0: bb_text = "하단 이탈(침체)"
+            else: bb_text = f"밴드 내({bb_pos*100:.0f}%)"
+            
+            df_as_of['Vol_20MA'] = df_as_of['Volume'].rolling(window=20).mean()
+            vol_ratio = float(df_as_of['Volume'].iloc[-1] / df_as_of['Vol_20MA'].iloc[-1]) if df_as_of['Vol_20MA'].iloc[-1] > 0 else 1.0
+            
+            df_as_of['OBV'] = (np.sign(df_as_of['Close'].diff()) * df_as_of['Volume']).fillna(0).cumsum()
+            obv_trend = "상승(매집중)" if df_as_of['OBV'].iloc[-1] > df_as_of['OBV'].iloc[-20] else "하락(이탈중)"
+            
+            delta = df_as_of['Close'].diff()
+            rs = (delta.where(delta > 0, 0)).rolling(window=14).mean() / (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+            current_rsi = float(100 - (100 / (1 + rs)).iloc[-1]) if len(df_as_of) >= 15 else 50.0
+            
+            # --- 4. 연속 수익률 및 상대수익률 ---
+            s_avg_up, s_avg_down, s_curr_ret, s_curr_sign = calculate_streak_averages(df_as_of)
+            
+            sub_df = df_as_of[df_as_of.index >= sub_start_dt]
+            sub_ret = float(sub_df['Close'].iloc[-1] / sub_df['Close'].iloc[0] - 1) if len(sub_df) > 1 else 0.0
+            
+            stock_20d_ret = float(today_close / df_as_of['Close'].iloc[-20] - 1) if len(df_as_of) >= 20 else 0.0
+            market_20d_ret = float(m_df_as_of['Close'].iloc[-1] / m_df_as_of['Close'].iloc[-20] - 1) if 'm_df_as_of' in locals() and len(m_df_as_of) >= 20 else 0.0
+            relative_strength = stock_20d_ret - market_20d_ret
+            
+            # --- 🔴 신규: 전략 분석 및 코멘트 ---
+            action = "관망"
+            strategy = ""
+            
+            if long_term_bull and obv_trend == "상승(매집중)":
+                action = "🌟 장기 대세 상승 (홀딩/매수)"
+                strategy = "[장기 뷰] 120일선 우상향 & 스마트머니(OBV) 매집 중인 주도주입니다. 잔파도에 털리지 마세요. "
+            elif not long_term_bull:
+                action = "⚠️ 장기 역배열 (보수적 접근)"
+                strategy = "[장기 뷰] 120일선 아래에 있거나 우하향 중입니다. 단기 트레이딩으로만 접근하세요. "
+            
+            if gap_pct > 0.015 and is_yin_candle:
+                strategy += f"⚠️ 장전(시간외) {gap_pct*100:.1f}% 상승 후 정규장 {intraday_pct*100:.1f}% 하락(음봉) 패턴."
+                if vol_ratio > 1.5:
+                    action = "🚨 세력 설거지 주의 (매도)"
+                    strategy += " 거래량 폭발! 시초가 추격 매수 절대 금지, 보유자는 비중 축소."
+                else:
+                    strategy += " 시초가 갭 띄우고 미는 패턴이니 종가 부근까지 관망하세요."
+            elif gap_pct < -0.015 and not is_yin_candle:
+                strategy += f"💡 장전 {-gap_pct*100:.1f}% 하락 후 정규장 매집(양봉) 패턴."
+                if is_above_5ma:
+                    action = "🟢 세력 매집 (매수 타점)"
+                    strategy += " 5일선 지지가 확인되었으니 하락을 기회 삼아 줍줍하기 좋습니다."
+            else:
+                if is_above_5ma:
+                    if not is_up_day and vol_ratio < 0.8:
+                        strategy += "5일선 위 거래량 마른 건강한 음봉(눌림목) 타점입니다."
+                    elif is_up_day and vol_ratio > 1.5:
+                        strategy += "거래량 터지며 5일선 추세 상승 중. 달리는 말 올라타되 단기 저항 주의."
+                    else:
+                        strategy += "무난한 5일선 상승 추세. 이탈 전까지 편안히 홀딩하세요."
+                else:
+                    strategy += "5일선 이탈. 의미 있는 반등 전까지 신규 매수 대기."
+
+            # 빠짐없이 꽉 채운 16개 지표 데이터 표
+            results.append({
+                "종목명(티커)": display_name,
+                "현재 포지션": action,
+                "상세 매매 전략 (추세/수급 종합)": strategy,
+                "RSI(14)": f"{current_rsi:.1f}",
+                "200일 이격률(거시)": f"{disparity_200*100:+.1f}%" if len(df_as_of) >= 200 else "N/A",
+                "20일 이격률(단기)": f"{disparity_20*100:+.1f}%",
+                "볼린저밴드 위치": bb_text,
+                "OBV 수급(20일)": obv_trend,
+                "장전 갭(%)": f"{gap_pct*100:+.2f}%",
+                "정규장 변동(%)": f"{intraday_pct*100:+.2f}%",
+                "5일선/120일선": "✅/✅" if is_above_5ma and long_term_bull else ("✅/❌" if is_above_5ma else "❌/❌"),
+                "당일 거래량": f"평소 {vol_ratio:.1f}배",
+                "시장대비 상대수익": f"{relative_strength*100:+.1f}%",
+                "평균 연속 상승률": f"{s_avg_up*100:+.2f}%", 
+                "평균 연속 하락률": f"{s_avg_down*100:+.2f}%", 
+                "현재 연속 수익률": f"{s_curr_ret*100:+.2f}%",
+                "지정 구간 수익률": f"{sub_ret*100:+.2f}%"
+            })
+        except Exception as e:
+            failed_stocks.append(f"{t_name}({t_code})")
+            
+        progress_bar.progress((i + 1) / len(parsed_stocks))
+        
+    if failed_stocks:
+        st.warning(f"⚠️ 상장 폐지 또는 데이터 부족으로 제외된 종목: {', '.join(failed_stocks)}")
+        
+    if results:
+        res_df = pd.DataFrame(results)
+        st.dataframe(res_df, use_container_width=True)
+    else:
+        st.error("조건에 맞는 결과가 없습니다.")
