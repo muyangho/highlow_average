@@ -10,7 +10,7 @@ import warnings
 warnings.filterwarnings('ignore')
 
 # --- 페이지 설정 ---
-st.set_page_config(page_title="주도주 퀀트 & 세력 수급(OBV) 정밀 타점 분석기", layout="wide")
+st.set_page_config(page_title="주도주 퀀트 & 갭(Gap) 확률 통계 분석기", layout="wide")
 
 with st.sidebar:
     if st.button("🔄 종목 데이터 리셋 (오류시 클릭)", help="네트워크 지연이나 꼬임 발생 시 눌러주세요."):
@@ -76,7 +76,6 @@ def parse_tickers(input_text, market):
         parsed.append({'name': name, 'ticker': ticker})
     return parsed
 
-# --- 실시간 펀더멘털 (PER, PBR) 크롤링 ---
 def get_fundamentals(ticker, market):
     per, pbr = None, None
     try:
@@ -91,8 +90,7 @@ def get_fundamentals(ticker, market):
             info = yf.Ticker(ticker).info
             per = info.get('trailingPE', info.get('forwardPE', None))
             pbr = info.get('priceToBook', None)
-    except:
-        pass
+    except: pass
     return per, pbr
 
 def get_market_index(market, start_date, end_date):
@@ -123,12 +121,10 @@ def calculate_streak_averages(df):
     df['Return'] = df['Close'].pct_change()
     df = df.dropna()
     if df.empty: return 0.0, 0.0, 0.0, 0
-    
     df['Sign'] = np.sign(df['Return'].round(4))
     df['Streak_ID'] = (df['Sign'] != df['Sign'].shift(1)).cumsum()
     streak_returns = df.groupby('Streak_ID').apply(lambda x: float((1 + x['Return']).prod() - 1), include_groups=False).to_frame(name='Cumulative_Return')
     streak_returns['Sign'] = df.groupby('Streak_ID')['Sign'].first()
-    
     avg_up = float(streak_returns[streak_returns['Sign'] == 1]['Cumulative_Return'].mean()) if not streak_returns[streak_returns['Sign'] == 1].empty else 0.0
     avg_down = float(streak_returns[streak_returns['Sign'] == -1]['Cumulative_Return'].mean()) if not streak_returns[streak_returns['Sign'] == -1].empty else 0.0
     curr_ret = float(streak_returns.iloc[-1]['Cumulative_Return']) if not streak_returns.empty else 0.0
@@ -136,8 +132,8 @@ def calculate_streak_averages(df):
     return avg_up, avg_down, curr_ret, curr_sign
 
 # --- UI 레이아웃 ---
-st.title("🔥 대세 주도주 & 퀀트 지표 완전체 분석기")
-st.caption("사라졌던 시장 매크로 지표 복구! OBV 수치화 및 PER/PBR 가치평가를 결합하여 세력의 타점을 역추적합니다.")
+st.title("🔥 대세 주도주 & 갭(Gap) 확률 통계 분석기")
+st.caption("과열 지표, 수급, 펀더멘털뿐만 아니라 '과거 빅데이터'를 기반으로 시간외/프리마켓 갭 발생 시의 정규장 승률을 계산합니다.")
 
 with st.sidebar:
     st.header("설정 (Settings)")
@@ -146,7 +142,6 @@ with st.sidebar:
     stock_input = st.text_area("종목 입력", value=default_input)
     
     st.subheader("기간 설정")
-    st.caption("200일선 계산을 위해 전체 기간은 1년 이상 유지하세요.")
     col1, col2 = st.columns(2)
     with col1: start_date = st.date_input("전체 시작일", datetime.today() - timedelta(days=500))
     with col2: end_date = st.date_input("전체 종료일", datetime.today())
@@ -169,7 +164,6 @@ if run_btn:
     sub_start_dt = pd.to_datetime(sub_start)
     sub_end_dt = pd.to_datetime(sub_end)
     
-    # 🔴 누락되었던 시장 매크로 패널 완벽 복원
     st.subheader(f"🌐 시장 매크로 공포탐욕 지수 (기준일: {sub_end_dt.strftime('%Y-%m-%d')})")
     
     if market_df_full is not None and not market_df_full.empty:
@@ -195,17 +189,15 @@ if run_btn:
             elif fg_score >= 80: fg_status = "🚨 단기 과열 극심 (조정 임박)"
             elif fg_score >= 60: fg_status = "📈 탐욕 (추가 상승 여력 있으나 주의)"
             
-            # 메트릭 UI 표시
             col_m1, col_m2, col_m3, col_m4 = st.columns(4)
             col_m1.metric(f"공포탐욕지수", f"{fg_score:.1f}점", fg_status)
             col_m2.metric("VIX (변동성 지수)", f"{current_vix:.2f}")
             col_m3.metric(f"{market_name} 20일 이격률", f"{m_disp_20*100:+.2f}%")
             col_m4.metric(f"지정 구간 시장수익률", f"{m_sub_ret*100:+.2f}%")
-            
             st.progress(int(fg_score), text=f"🔥 탐욕(100) ↔ 🧊 공포(0) | 현재 스코어: {fg_score:.1f}점 ({fg_status})")
             
     st.divider()
-    st.subheader(f"🎯 개별 종목 지표 총망라 및 펀더멘털 전략 (기준일: {sub_end_dt.strftime('%Y-%m-%d')})")
+    st.subheader(f"🎯 개별 종목 지표 총망라 및 갭 확률 통계 전략 (기준일: {sub_end_dt.strftime('%Y-%m-%d')})")
     
     results = []
     progress_bar = st.progress(0)
@@ -233,7 +225,6 @@ if run_btn:
             
             display_name = f"{t_name} ({t_code})"
             
-            # --- 펀더멘털(PER/PBR) 데이터 로드 ---
             per, pbr = get_fundamentals(t_code, market_choice)
             
             # --- 1. OHLC 및 갭(Gap) 분석 ---
@@ -245,6 +236,23 @@ if run_btn:
             intraday_pct = (today_close - today_open) / today_open
             is_up_day = today_close > prev_close 
             is_yin_candle = today_close < today_open 
+            
+            # --- 🔴 신규: 과거 빅데이터 갭 승률 분석 (Gap Statistics) ---
+            df_as_of['Prev_Close'] = df_as_of['Close'].shift(1)
+            df_as_of['Gap'] = (df_as_of['Open'] - df_as_of['Prev_Close']) / df_as_of['Prev_Close']
+            df_as_of['Intraday'] = (df_as_of['Close'] - df_as_of['Open']) / df_as_of['Open']
+            
+            prob_up = 0.0
+            gap_stat_msg = ""
+            
+            if gap_pct > 0.01: # 1% 이상 갭상승 시
+                similar_gaps = df_as_of[df_as_of['Gap'] > 0.01]
+                prob_up = (similar_gaps['Intraday'] > 0).mean() * 100 if len(similar_gaps) > 0 else 50.0
+                gap_stat_msg = f"[빅데이터] 과거 1% 이상 갭상승 시 정규장 지속(양봉) 확률: {prob_up:.1f}%. "
+            elif gap_pct < -0.01: # 1% 이상 갭하락 시
+                similar_gaps = df_as_of[df_as_of['Gap'] < -0.01]
+                prob_up = (similar_gaps['Intraday'] > 0).mean() * 100 if len(similar_gaps) > 0 else 50.0
+                gap_stat_msg = f"[빅데이터] 과거 1% 이상 갭하락 시 정규장 반등(양봉) 확률: {prob_up:.1f}%. "
             
             # --- 2. 이동평균선 및 이격률 분석 ---
             df_as_of['5MA'] = df_as_of['Close'].rolling(window=5).mean()
@@ -273,10 +281,8 @@ if run_btn:
             df_as_of['Vol_20MA'] = df_as_of['Volume'].rolling(window=20).mean()
             vol_ratio = float(df_as_of['Volume'].iloc[-1] / df_as_of['Vol_20MA'].iloc[-1]) if df_as_of['Vol_20MA'].iloc[-1] > 0 else 1.0
             
-            # 🔴 OBV 누적 수급 및 20일 변동 '확실한 값' 처리
             df_as_of['OBV'] = (np.sign(df_as_of['Close'].diff()) * df_as_of['Volume']).fillna(0).cumsum()
             obv_20d_diff = df_as_of['OBV'].iloc[-1] - df_as_of['OBV'].iloc[-20] if len(df_as_of) >= 20 else 0
-            
             if obv_20d_diff > 0:
                 obv_val = f"▲ +{obv_20d_diff/10000:.0f}만" if market_choice == '한국 (KRX)' else f"▲ +{obv_20d_diff/1000000:.2f}M"
             else:
@@ -288,7 +294,6 @@ if run_btn:
             
             # --- 4. 연속 수익률 및 상대수익률 ---
             s_avg_up, s_avg_down, s_curr_ret, s_curr_sign = calculate_streak_averages(df_as_of)
-            
             sub_df = df_as_of[df_as_of.index >= sub_start_dt]
             sub_ret = float(sub_df['Close'].iloc[-1] / sub_df['Close'].iloc[0] - 1) if len(sub_df) > 1 else 0.0
             
@@ -296,52 +301,45 @@ if run_btn:
             market_20d_ret = float(m_df_as_of['Close'].iloc[-1] / m_df_as_of['Close'].iloc[-20] - 1) if 'm_df_as_of' in locals() and len(m_df_as_of) >= 20 else 0.0
             relative_strength = stock_20d_ret - market_20d_ret
             
-            # --- 🔴 신규: 전략 분석 및 코멘트 (+가치평가 로직) ---
+            # --- 5. 전략 코멘트 생성 ---
             action = "관망"
-            strategy = ""
+            strategy = gap_stat_msg # 🔴 통계 데이터 먼저 출력
             
             if long_term_bull and obv_20d_diff > 0:
-                action = "🌟 장기 대세 상승 (홀딩/매수)"
-                strategy = "[장기뷰] 120일선 우상향 & 스마트머니 누적 매집 중인 주도주입니다. "
+                action = "🌟 대세 상승 (강력 매수)"
+                strategy += "[장기] 120일선 우상향 & 스마트머니 누적 매집 진행 중. "
             elif not long_term_bull:
-                action = "⚠️ 장기 역배열 (보수적 접근)"
-                strategy = "[장기뷰] 120일선 역배열 진행 중입니다. 단기 스윙으로만 접근하세요. "
+                action = "⚠️ 장기 역배열 (단기 스윙)"
+                strategy += "[장기] 120일선 역배열로 단기 반등에만 집중하세요. "
                 
-            # 사용자의 PER/PBR 고평가/저평가 기준 적용
             if per and pbr:
                 if per >= 13 and pbr >= 1.5:
-                    strategy += f"[펀더멘털] PER {per:.1f}배, PBR {pbr:.2f}배로 가치평가상 '고평가(과열)' 영역입니다. "
+                    strategy += f"[가치] PER {per:.1f}, PBR {pbr:.2f} (고평가 영역). "
                 elif per <= 9 and pbr <= 0.8:
-                    strategy += f"[펀더멘털] PER {per:.1f}배, PBR {pbr:.2f}배로 펀더멘털상 완벽한 '저평가(바닥)' 영역입니다. "
+                    strategy += f"[가치] PER {per:.1f}, PBR {pbr:.2f} (저평가 매력). "
             
-            # 갭 및 단기 캔들 패턴 분석
             if gap_pct > 0.015 and is_yin_candle:
-                strategy += f"⚠️ 장전 호가 {gap_pct*100:.1f}% 띄우고 정규장에 {intraday_pct*100:.1f}% 하락(음봉) 패턴 발동."
+                strategy += f"⚠️ 장전 갭 {gap_pct*100:.1f}% 상승 후 정규장에 {intraday_pct*100:.1f}% 하락(음봉)으로 밀어내는 '개미털기(설거지)' 패턴입니다. "
                 if vol_ratio > 1.5:
-                    action = "🚨 세력 설거지 주의 (매도)"
-                    strategy += " 거래량 폭발! 전형적인 세력 차익실현이므로 추격 매수 금지, 보유자는 비중 축소."
-                else:
-                    strategy += " 시초가 갭 띄우고 미는 패턴이니 종가 부근까지 관망하세요."
+                    action = "🚨 고점 거래량 폭발 (매도)"
+                    strategy += "거래량까지 폭발했으니 뇌동매수 절대 금지."
             elif gap_pct < -0.015 and not is_yin_candle:
-                strategy += f"💡 장전 {-gap_pct*100:.1f}% 하락 후 정규장 매집(양봉) 패턴."
+                strategy += f"💡 장전 갭 {gap_pct*100:.1f}% 하락 후 정규장 매집(양봉) 패턴. "
                 if is_above_5ma:
                     action = "🟢 세력 매집 (매수 타점)"
-                    strategy += " 5일선 지지가 확인되었으니 하락을 기회 삼아 줍기 좋습니다."
+                    strategy += "5일선이 지지된다면 시초가 흔들림을 역이용한 아주 좋은 매수 타점입니다."
             else:
                 if is_above_5ma:
-                    if not is_up_day and vol_ratio < 0.8:
-                        strategy += "5일선 위 거래량 마른 건강한 음봉(눌림목) 타점입니다."
-                    elif is_up_day and vol_ratio > 1.5:
-                        strategy += "거래량 터지며 5일선 추세 상승 중. 달리는 말 올라타되 단기 저항 주의."
-                    else:
-                        strategy += "무난한 5일선 상승 추세. 꺾이기 전까지 편안히 홀딩하세요."
+                    if not is_up_day and vol_ratio < 0.8: strategy += "5일선 위 거래량 마른 건강한 눌림목 타점입니다."
+                    elif is_up_day and vol_ratio > 1.5: strategy += "대량 거래량과 함께 5일선 추세 상승 중입니다. (단기 과열 주의)"
+                    else: strategy += "5일선 위에서 무난한 우상향 추세입니다."
                 else:
-                    strategy += "5일선 이탈. 의미 있는 양봉 반등 전까지 신규 매수 대기."
+                    strategy += "5일선이 이탈되었습니다. 바닥 확인 전까지 신규 매수 금지."
 
             results.append({
                 "종목명(티커)": display_name,
                 "현재 포지션": action,
-                "상세 매매 전략 (추세/가치/수급 종합)": strategy,
+                "상세 매매 전략 (추세/가치/통계 종합)": strategy,
                 "PER (배)": f"{per:.1f}" if per else "N/A",
                 "PBR (배)": f"{pbr:.2f}" if pbr else "N/A",
                 "RSI(14)": f"{current_rsi:.1f}",
@@ -371,3 +369,4 @@ if run_btn:
         st.dataframe(res_df, use_container_width=True)
     else:
         st.error("조건에 맞는 결과가 없습니다.")
+
